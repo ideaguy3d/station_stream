@@ -1,0 +1,24 @@
+[
+  {
+    "slug": "north",
+    "callSign": "KNVP",
+    "name": "North Valley Public Media",
+    "tagline": "Stories from the mountains to the valley",
+    "brandColor": "#1f6feb",
+    "homeRows": [
+      { "title": "Featured on North Valley", "shows": ["night-sky-notes", "backyard-science"] },
+      { "title": "Local Stories", "shows": ["river-towns"] }
+    ]
+  },
+  {
+    "slug": "south",
+    "callSign": "WGCT",
+    "name": "Gulf Coast Public TV",
+    "tagline": "Your coast, your stories",
+    "brandColor": "#d1495b",
+    "homeRows": [
+      { "title": "Gulf Coast Picks", "shows": ["main-street-kitchen", "river-towns"] },
+      { "title": "Science on the Coast", "shows": ["backyard-science"] }
+    ]
+  }
+]

@@ -1,0 +1,22 @@
+{
+  "name": "station-stream",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Mini white-label streaming platform: one GraphQL API, many branded stations",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node scripts/local-cdn.js & node --watch src/server.js",
+    "cdn": "node scripts/local-cdn.js",
+    "video:test": "sh scripts/make-test-pattern.sh"
+  },
+  "dependencies": {
+    "@apollo/server": "^5.5.1",
+    "@as-integrations/express5": "^1.1.2",
+    "express": "^5.2.1",
+    "graphql": "^16.14.2"
+  }
+}

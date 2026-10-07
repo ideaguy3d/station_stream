@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Station Stream</title>
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
+  <style>
+    :root { --brand: #444; --bg: #0f1115; --card: #1a1d24; --text: #e8eaed; --muted: #9aa0a6; }
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
+    header { display: flex; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 4px solid var(--brand); flex-wrap: wrap; }
+    .logo { background: var(--brand); color: #fff; font-weight: 800; padding: 8px 12px; border-radius: 6px; letter-spacing: 1px; }
+    header h1 { font-size: 20px; margin: 0; }
+    header p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
+    header select { margin-left: auto; padding: 6px 10px; border-radius: 6px; background: var(--card); color: var(--text); border: 1px solid #333; }
+    main { padding: 24px; max-width: 1100px; margin: 0 auto; }
+    video { width: 100%; max-height: 60vh; background: #000; border-radius: 8px; }
+    #status { color: var(--muted); font-size: 13px; min-height: 18px; margin: 8px 0 24px; font-family: ui-monospace, monospace; }
+    h2 { font-size: 17px; margin: 24px 0 10px; }
+    .row { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .show { background: var(--card); border-radius: 8px; padding: 14px; border-top: 3px solid var(--brand); }
+    .show h3 { margin: 0 0 4px; font-size: 15px; }
+    .show .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
+    .ep { display: block; width: 100%; text-align: left; margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid #333; background: transparent; color: var(--text); cursor: pointer; font-size: 13px; }
+    .ep:hover:not(:disabled) { border-color: var(--brand); }
+    .ep:disabled { color: var(--muted); cursor: not-allowed; }
+    .error { color: #ff8a80; }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo" id="callSign">…</div>
+    <div><h1 id="name">Loading…</h1><p id="tagline"></p></div>
+    <select id="stationPicker" aria-label="Choose station"></select>
+  </header>
+  <main>
+    <video id="video" controls playsinline></video>
+    <div id="status">Pick an episode.</div>
+    <div id="rows"></div>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const slug = new URLSearchParams(location.search).get('station') || 'north';
+    let hls;
+
+    async function gql(query, variables) {
+      const res = await fetch('/graphql', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query, variables }),
+      });
+      const body = await res.json();
+      if (body.errors) throw new Error(body.errors.map((e) => e.message).join('; '));
+      return body.data;
+    }
+
+    const HOME = `query Home($slug: String!) {
+      stations { slug name }
+      station(slug: $slug) {
+        callSign name tagline brandColor
+        homeRows { title shows { title description franchise { title }
+          seasons { number episodes { title number durationSeconds
+            fullLength { availability hlsUrl } } } } }
+      }
+    }`;
+
+    function play(url, label) {
+      const video = $('video');
+      if (hls) { hls.destroy(); hls = null; }
+      $('status').textContent = `Loading ${label} from ${new URL(url).host}`;
+      if (window.Hls && Hls.isSupported()) {
+        hls = new Hls();
+        hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => {
+          const lvl = hls.levels[d.level];
+          const quality = lvl.height ? `${lvl.height}p @ ${Math.round(lvl.bitrate / 1000)} kbps` : 'single rendition, no bitrate info';
+          $('status').textContent = `Playing ${label} · ${quality} · ${hls.levels.length} quality level(s)`;
+        });
+        hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) $('status').textContent = `Video error: ${d.details}`; });
+        hls.loadSource(url);
+        hls.attachMedia(video);
+      } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
+        video.src = url; // Safari plays HLS natively
+        $('status').textContent = `Playing ${label} (native HLS)`;
+      }
+      video.play().catch(() => {});
+    }
+
+    function render(data) {
+      const st = data.station;
+      $('stationPicker').innerHTML = data.stations
+        .map((s) => `<option value="${s.slug}" ${s.slug === slug ? 'selected' : ''}>${s.name}</option>`).join('');
+      if (!st) { $('name').textContent = `No station "${slug}"`; return; }
+
+      document.documentElement.style.setProperty('--brand', st.brandColor);
+      document.title = st.name;
+      $('callSign').textContent = st.callSign;
+      $('name').textContent = st.name;
+      $('tagline').textContent = st.tagline || '';
+
+      const rows = $('rows');
+      rows.innerHTML = '';
+      for (const row of st.homeRows) {
+        const section = document.createElement('section');
+        section.innerHTML = `<h2>${row.title}</h2><div class="row"></div>`;
+        for (const show of row.shows) {
+          const card = document.createElement('div');
+          card.className = 'show';
+          card.innerHTML = `<h3>${show.title}</h3><div class="meta">${show.franchise.title} · ${show.description || ''}</div>`;
+          for (const season of show.seasons) for (const ep of season.episodes) {
+            const btn = document.createElement('button');
+            btn.className = 'ep';
+            const asset = ep.fullLength;
+            const label = `S${season.number}E${ep.number} ${ep.title}`;
+            if (asset && asset.hlsUrl) {
+              btn.textContent = `▶ ${label}`;
+              btn.onclick = () => play(asset.hlsUrl, label);
+            } else {
+              btn.textContent = `🔒 ${label} (${asset ? asset.availability.toLowerCase() : 'unavailable'})`;
+              btn.disabled = true;
+            }
+            card.appendChild(btn);
+          }
+          section.querySelector('.row').appendChild(card);
+        }
+        rows.appendChild(section);
+      }
+    }
+
+    $('stationPicker').onchange = (e) => { location.search = `?station=${e.target.value}`; };
+
+    gql(HOME, { slug }).then(render).catch((err) => {
+      $('name').textContent = 'Could not load station';
+      $('status').innerHTML = `<span class="error">${err.message}</span>`;
+    });
+  </script>
+</body>
+</html>

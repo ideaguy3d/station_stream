@@ -1,0 +1,217 @@
+{
+  "_note": "Fake catalog shaped like PBS Media Manager: franchise > show > season > episode > asset, with fields under `attributes`. Video paths are relative to VIDEO_BASE_URL.",
+  "franchises": [
+    {
+      "id": "fr-science-hour",
+      "type": "franchise",
+      "attributes": { "title": "Science Hour", "slug": "science-hour" },
+      "shows": [
+        {
+          "id": "sh-backyard-science",
+          "type": "show",
+          "attributes": {
+            "title": "Backyard Science",
+            "slug": "backyard-science",
+            "description_short": "Big experiments you can run with things in your garage."
+          },
+          "seasons": [
+            {
+              "id": "se-backyard-science-1",
+              "type": "season",
+              "attributes": { "ordinal": 1 },
+              "episodes": [
+                {
+                  "id": "ep-backyard-science-101",
+                  "type": "episode",
+                  "attributes": { "title": "Bottle Rockets", "slug": "bottle-rockets", "ordinal": 1, "duration": 20 },
+                  "assets": [
+                    {
+                      "id": "as-backyard-science-101",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "Bottle Rockets",
+                        "object_type": "full_length",
+                        "duration": 20,
+                        "availabilities": {
+                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
+                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                        },
+                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "ep-backyard-science-102",
+                  "type": "episode",
+                  "attributes": { "title": "Kitchen Volcanoes", "slug": "kitchen-volcanoes", "ordinal": 2, "duration": 20 },
+                  "assets": [
+                    {
+                      "id": "as-backyard-science-102",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "Kitchen Volcanoes",
+                        "object_type": "full_length",
+                        "duration": 20,
+                        "availabilities": {
+                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
+                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                        },
+                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "sh-night-sky-notes",
+          "type": "show",
+          "attributes": {
+            "title": "Night Sky Notes",
+            "slug": "night-sky-notes",
+            "description_short": "What to look for above your town this month."
+          },
+          "seasons": [
+            {
+              "id": "se-night-sky-notes-1",
+              "type": "season",
+              "attributes": { "ordinal": 1 },
+              "episodes": [
+                {
+                  "id": "ep-night-sky-notes-101",
+                  "type": "episode",
+                  "attributes": { "title": "Finding Saturn", "slug": "finding-saturn", "ordinal": 1, "duration": 20 },
+                  "assets": [
+                    {
+                      "id": "as-night-sky-notes-101",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "Finding Saturn",
+                        "object_type": "full_length",
+                        "duration": 20,
+                        "availabilities": {
+                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
+                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                        },
+                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "fr-local-stories",
+      "type": "franchise",
+      "attributes": { "title": "Local Stories", "slug": "local-stories" },
+      "shows": [
+        {
+          "id": "sh-river-towns",
+          "type": "show",
+          "attributes": {
+            "title": "River Towns",
+            "slug": "river-towns",
+            "description_short": "The small towns that grew up along the water."
+          },
+          "seasons": [
+            {
+              "id": "se-river-towns-1",
+              "type": "season",
+              "attributes": { "ordinal": 1 },
+              "episodes": [
+                {
+                  "id": "ep-river-towns-101",
+                  "type": "episode",
+                  "attributes": { "title": "The Ferry Landing", "slug": "the-ferry-landing", "ordinal": 1, "duration": 20 },
+                  "assets": [
+                    {
+                      "id": "as-river-towns-101",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "The Ferry Landing",
+                        "object_type": "full_length",
+                        "duration": 20,
+                        "availabilities": {
+                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
+                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                        },
+                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "ep-river-towns-102",
+                  "type": "episode",
+                  "attributes": { "title": "Mill Town Memories", "slug": "mill-town-memories", "ordinal": 2, "duration": 20 },
+                  "assets": [
+                    {
+                      "id": "as-river-towns-102",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "Mill Town Memories",
+                        "object_type": "full_length",
+                        "duration": 20,
+                        "availabilities": {
+                          "public": { "start": "2026-01-01T00:00:00Z", "end": "2026-03-01T00:00:00Z" },
+                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                        },
+                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        },
+        {
+          "id": "sh-main-street-kitchen",
+          "type": "show",
+          "attributes": {
+            "title": "Main Street Kitchen",
+            "slug": "main-street-kitchen",
+            "description_short": "Family recipes from the diners on Main Street."
+          },
+          "seasons": [
+            {
+              "id": "se-main-street-kitchen-1",
+              "type": "season",
+              "attributes": { "ordinal": 1 },
+              "episodes": [
+                {
+                  "id": "ep-main-street-kitchen-101",
+                  "type": "episode",
+                  "attributes": { "title": "Pie Day", "slug": "pie-day", "ordinal": 1, "duration": 20 },
+                  "assets": [
+                    {
+                      "id": "as-main-street-kitchen-101",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "Pie Day",
+                        "object_type": "full_length",
+                        "duration": 20,
+                        "availabilities": {
+                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
+                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                        },
+                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
