@@ -4,21 +4,46 @@
     "callSign": "KNVP",
     "name": "North Valley Public Media",
     "tagline": "Stories from the mountains to the valley",
-    "brandColor": "#1f6feb",
+    "brandColor": "#3b82f6",
     "homeRows": [
-      { "title": "Featured on North Valley", "shows": ["the-ai-desk", "code-lab"] },
-      { "title": "Work Life", "shows": ["startup-stories", "vertical-stories"] }
-    ]
+      {
+        "title": "Featured on North Valley",
+        "shows": [
+          "the-ai-desk",
+          "code-lab"
+        ]
+      },
+      {
+        "title": "Work Life",
+        "shows": [
+          "startup-stories",
+          "vertical-stories"
+        ]
+      }
+    ],
+    "theme": "alpine"
   },
   {
     "slug": "south",
     "callSign": "WGCT",
     "name": "Gulf Coast Public TV",
     "tagline": "Your coast, your stories",
-    "brandColor": "#e5484d",
+    "brandColor": "#e8590c",
     "homeRows": [
-      { "title": "Gulf Coast Picks", "shows": ["startup-stories", "the-ai-desk"] },
-      { "title": "After Hours", "shows": ["code-lab"] }
-    ]
+      {
+        "title": "Gulf Coast Picks",
+        "shows": [
+          "startup-stories",
+          "the-ai-desk"
+        ]
+      },
+      {
+        "title": "After Hours",
+        "shows": [
+          "code-lab"
+        ]
+      }
+    ],
+    "theme": "coastal"
   }
 ]

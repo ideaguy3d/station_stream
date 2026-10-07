@@ -1,11 +1,39 @@
 @import "tailwindcss";
 @source "../public";
 
-/* Each station sets --brand at runtime; bg-brand, text-brand, ring-brand/40 etc. follow it. */
+/* Variants so markup can say alpine:block / coastal:hidden. */
+@custom-variant alpine (&:where([data-theme="alpine"], [data-theme="alpine"] *));
+@custom-variant coastal (&:where([data-theme="coastal"], [data-theme="coastal"] *));
+
+/* Utilities follow per-station variables: bg-canvas, bg-surface, text-ink, text-muted, border-line, bg-brand, text-accent, font-display, rounded-card. */
 @theme inline {
   --color-brand: var(--brand);
+  --color-accent: var(--accent);
+  --color-canvas: var(--canvas);
+  --color-surface: var(--surface);
+  --color-ink: var(--ink);
+  --color-muted: var(--muted);
+  --color-line: var(--line);
+  --font-display: var(--display-font);
+  --radius-card: var(--card-radius);
 }
 
 :root {
-  --brand: #71717a;
+  --brand: #71717a; --accent: #a1a1aa; --canvas: #09090b; --surface: #18181b;
+  --ink: #f4f4f5; --muted: #a1a1aa; --line: rgb(255 255 255 / 0.1);
+  --display-font: ui-sans-serif, system-ui, sans-serif; --card-radius: 0.75rem;
+}
+
+/* North Valley: night-sky navy, icy accents, serif headlines, crisp corners. */
+[data-theme="alpine"] {
+  --accent: #67e8f9; --canvas: #070d1a; --surface: #0f1a2e;
+  --ink: #e6eefb; --muted: #8ba3c7; --line: rgb(148 180 230 / 0.14);
+  --display-font: ui-serif, "New York", Georgia, serif; --card-radius: 0.375rem;
+}
+
+/* Gulf Coast: warm sand, sunset orange, teal water, rounded friendly type. */
+[data-theme="coastal"] {
+  --accent: #0d9488; --canvas: #fbf3e6; --surface: #ffffff;
+  --ink: #3a2615; --muted: #8b6b4f; --line: rgb(58 38 21 / 0.12);
+  --display-font: ui-rounded, "SF Pro Rounded", "Nunito", system-ui, sans-serif; --card-radius: 1.25rem;
 }

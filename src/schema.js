@@ -18,6 +18,8 @@ export const typeDefs = `#graphql
     name: String!
     tagline: String
     brandColor: String!
+    "Visual theme the apps use: alpine | coastal"
+    theme: String!
     homeRows: [HomeRow!]!
   }
 

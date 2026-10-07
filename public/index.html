@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" class="bg-zinc-950">
+<html lang="en" class="bg-canvas">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
@@ -7,38 +7,70 @@
   <link rel="stylesheet" href="/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
 </head>
-<body class="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
-  <header class="sticky top-0 z-20 border-b border-white/10 bg-zinc-950/80 backdrop-blur">
+<body class="min-h-screen bg-canvas text-ink antialiased transition-colors">
+  <header class="sticky top-0 z-20 border-b border-line bg-canvas/85 backdrop-blur">
     <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
-      <div id="callSign" class="rounded-md bg-brand px-3 py-1.5 text-sm font-black tracking-widest text-white shadow-lg shadow-brand/30">····</div>
+      <div id="callSign" class="bg-brand px-3 py-1.5 text-sm font-black tracking-widest text-white shadow-lg shadow-brand/30 alpine:rounded-sm coastal:rounded-full coastal:px-4">····</div>
       <div class="min-w-0">
-        <h1 id="name" class="truncate text-lg font-semibold">Loading…</h1>
-        <p id="tagline" class="truncate text-sm text-zinc-400"></p>
+        <h1 id="name" class="truncate font-display text-lg font-semibold">Loading…</h1>
       </div>
-      <label class="ml-auto flex items-center gap-2 text-sm text-zinc-400">
+      <label class="ml-auto flex items-center gap-2 text-sm text-muted">
         <span class="hidden sm:inline">Station</span>
-        <select id="stationPicker" class="rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-zinc-100 focus:ring-2 focus:ring-brand focus:outline-none"></select>
+        <select id="stationPicker" class="rounded-card border border-line bg-surface px-3 py-1.5 text-ink focus:ring-2 focus:ring-brand focus:outline-none"></select>
       </label>
     </div>
-    <div class="h-1 bg-brand"></div>
   </header>
 
+  <!-- Station banner: mountains for North Valley, waves for Gulf Coast -->
+  <section class="relative overflow-hidden border-b border-line">
+    <div class="absolute inset-0 alpine:bg-gradient-to-b alpine:from-[#0b1a3a] alpine:via-[#0f2550] alpine:to-[#070d1a] coastal:bg-gradient-to-br coastal:from-[#ffb36b] coastal:via-[#ff8a5b] coastal:to-[#f06292]"></div>
+    <div class="absolute inset-0 hidden alpine:block">
+      <div class="absolute top-6 left-[12%] size-1 rounded-full bg-white/80"></div>
+      <div class="absolute top-14 left-[30%] size-0.5 rounded-full bg-white/70"></div>
+      <div class="absolute top-8 left-[55%] size-1 rounded-full bg-white/60"></div>
+      <div class="absolute top-20 left-[78%] size-0.5 rounded-full bg-white/80"></div>
+      <div class="absolute top-5 right-[8%] size-1 rounded-full bg-cyan-200/80"></div>
+      <svg class="absolute bottom-0 w-full" viewBox="0 0 1440 220" preserveAspectRatio="none" aria-hidden="true">
+        <path fill="#24477f" d="M0 220 L0 140 L160 60 L300 150 L470 40 L640 160 L820 70 L980 150 L1150 50 L1310 130 L1440 80 L1440 220Z"/>
+        <path fill="#122a52" d="M0 220 L0 180 L200 110 L360 190 L560 100 L760 190 L940 120 L1120 190 L1300 120 L1440 170 L1440 220Z"/>
+        <path fill="#e6eefb" opacity=".85" d="M470 40 L500 62 L478 58 L455 70 L440 55Z M1150 50 L1180 72 L1158 68 L1135 80 L1120 66Z"/>
+      </svg>
+    </div>
+    <div class="absolute inset-0 hidden coastal:block">
+      <div class="absolute top-6 right-[14%] size-24 rounded-full bg-yellow-100/70 blur-[2px]"></div>
+      <svg class="absolute bottom-0 w-full" viewBox="0 0 1440 200" preserveAspectRatio="none" aria-hidden="true">
+        <path fill="#2bb5a8" opacity=".9" d="M0 110 C 240 60, 480 160, 720 110 S 1200 60, 1440 110 L1440 200 L0 200Z"/>
+        <path fill="#0d9488" d="M0 150 C 260 110, 520 190, 780 150 S 1240 110, 1440 150 L1440 200 L0 200Z"/>
+        <path fill="#fbf3e6" d="M0 185 C 300 165, 600 200, 900 182 S 1300 170, 1440 185 L1440 200 L0 200Z"/>
+      </svg>
+    </div>
+    <div class="relative mx-auto max-w-6xl px-4 pt-10 pb-24 sm:px-6 coastal:text-center">
+      <p id="bannerKicker" class="text-xs font-semibold tracking-[0.3em] uppercase alpine:text-cyan-200 coastal:text-white/90"></p>
+      <h2 id="bannerName" class="mt-2 font-display text-4xl font-bold text-white drop-shadow sm:text-5xl alpine:tracking-tight coastal:tracking-wide"></h2>
+      <p id="tagline" class="mt-2 text-base alpine:text-[#b7c8e6] alpine:italic coastal:text-white coastal:font-medium"></p>
+    </div>
+  </section>
+
   <main class="mx-auto max-w-6xl px-4 py-6 sm:px-6">
-    <section class="overflow-hidden rounded-2xl bg-black shadow-2xl ring-1 ring-white/10">
+    <section class="-mt-16 relative overflow-hidden rounded-card bg-black shadow-2xl ring-1 ring-line alpine:shadow-cyan-950/50 coastal:shadow-orange-900/20 coastal:ring-4 coastal:ring-white">
       <video id="video" controls playsinline class="aspect-video w-full bg-black"></video>
     </section>
 
     <div class="mt-4 flex flex-wrap items-center gap-3">
       <div class="min-w-0 flex-1">
-        <p class="text-xs font-medium tracking-wider text-brand uppercase">Now playing</p>
-        <h2 id="nowPlaying" class="truncate text-xl font-semibold">Pick an episode below</h2>
+        <p class="text-xs font-semibold tracking-wider text-brand uppercase">Now playing</p>
+        <h2 id="nowPlaying" class="truncate font-display text-xl font-semibold">Pick an episode below</h2>
       </div>
-      <div id="qualityButtons" class="flex gap-1 rounded-lg bg-zinc-900 p-1 ring-1 ring-white/10"></div>
+      <div id="qualityButtons" class="flex gap-1 rounded-card border border-line bg-surface p-1"></div>
     </div>
-    <p id="status" class="mt-2 font-mono text-xs text-zinc-500"></p>
+    <p id="status" class="mt-2 font-mono text-xs text-muted"></p>
 
     <div id="rows" class="mt-8 space-y-10"></div>
   </main>
+
+  <footer class="border-t border-line py-6 text-center text-xs text-muted">
+    <span id="footerName"></span> · powered by one shared Station Stream platform
+  </footer>
 
   <script>
     const $ = (id) => document.getElementById(id);
@@ -59,7 +91,7 @@
     const HOME = `query Home($slug: String!) {
       stations { slug name }
       station(slug: $slug) {
-        callSign name tagline brandColor
+        callSign name tagline brandColor theme
         homeRows { title shows { title description franchise { title }
           seasons { number episodes { title number durationSeconds imageUrl
             fullLength { availability hlsUrl } } } } }
@@ -79,8 +111,8 @@
         const b = document.createElement('button');
         b.textContent = label;
         b.className = active
-          ? 'rounded-md bg-brand px-3 py-1 text-xs font-semibold text-white'
-          : 'rounded-md px-3 py-1 text-xs font-medium text-zinc-400 hover:bg-white/5 hover:text-zinc-100';
+          ? 'rounded-card bg-brand px-3 py-1 text-xs font-semibold text-white'
+          : 'rounded-card px-3 py-1 text-xs font-medium text-muted hover:bg-brand/10 hover:text-ink';
         b.onclick = () => { hls.currentLevel = level; renderQualityButtons(); updateStatus(); };
         box.appendChild(b);
       }
@@ -121,17 +153,17 @@
       card.className = 'group w-64 shrink-0 snap-start text-left sm:w-72 disabled:cursor-not-allowed';
       card.disabled = !playable;
       card.innerHTML = `
-        <div class="relative aspect-video overflow-hidden rounded-xl bg-zinc-800 ring-1 ring-white/10 transition group-enabled:group-hover:ring-2 group-enabled:group-hover:ring-brand">
+        <div class="relative aspect-video overflow-hidden rounded-card bg-surface ring-1 ring-line shadow-md transition group-enabled:group-hover:-translate-y-1 group-enabled:group-hover:ring-2 group-enabled:group-hover:ring-brand coastal:shadow-orange-900/10 coastal:ring-4 coastal:ring-white">
           ${ep.imageUrl ? `<img src="${ep.imageUrl}" alt="" loading="lazy" class="h-full w-full object-cover transition duration-300 group-enabled:group-hover:scale-105 ${playable ? '' : 'opacity-40 grayscale'}">` : ''}
           <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent"></div>
           ${playable
             ? `<div class="absolute inset-0 grid place-items-center opacity-0 transition group-hover:opacity-100">
-                 <span class="grid size-12 place-items-center rounded-full bg-brand text-lg text-white shadow-lg">▶</span></div>`
+                 <span class="grid size-12 place-items-center bg-brand text-lg text-white shadow-lg alpine:rounded-sm coastal:rounded-full">▶</span></div>`
             : `<span class="absolute top-2 left-2 rounded-full bg-black/70 px-2.5 py-1 text-xs font-semibold text-amber-300 ring-1 ring-amber-300/40">🔒 Members only</span>`}
           <span class="absolute right-2 bottom-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-xs">${fmtTime(ep.durationSeconds)}</span>
         </div>
-        <p class="mt-2 truncate text-sm font-semibold">${ep.title}</p>
-        <p class="truncate text-xs text-zinc-400">${show.title} · S${season.number} E${ep.number}</p>`;
+        <p class="mt-2 truncate font-display text-sm font-semibold">${ep.title}</p>
+        <p class="truncate text-xs text-muted">${show.title} · S${season.number} E${ep.number}</p>`;
       if (playable) card.onclick = () => play(asset.hlsUrl, label);
       return card;
     }
@@ -142,19 +174,23 @@
         .map((s) => `<option value="${s.slug}" ${s.slug === slug ? 'selected' : ''}>${s.name}</option>`).join('');
       if (!st) { $('name').textContent = `No station "${slug}"`; return; }
 
+      document.documentElement.dataset.theme = st.theme;
       document.documentElement.style.setProperty('--brand', st.brandColor);
       document.title = `${st.name} · Station Stream`;
       $('callSign').textContent = st.callSign;
       $('name').textContent = st.name;
       $('tagline').textContent = st.tagline || '';
+      $('bannerName').textContent = st.name;
+      $('bannerKicker').textContent = `${st.callSign} · Member station`;
+      $('footerName').textContent = st.name;
 
       const rows = $('rows');
       rows.innerHTML = '';
       for (const row of st.homeRows) {
         const section = document.createElement('section');
         section.innerHTML = `
-          <h3 class="mb-3 flex items-center gap-2 text-lg font-semibold"><span class="h-5 w-1 rounded bg-brand"></span>${row.title}</h3>
-          <div class="-mx-4 flex snap-x gap-4 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6"></div>`;
+          <h3 class="mb-3 flex items-center gap-2 font-display text-xl font-semibold alpine:tracking-tight coastal:justify-center"><span class="text-accent alpine:inline coastal:hidden">▲</span><span class="hidden text-accent coastal:inline">〰</span>${row.title}</h3>
+          <div class="-mx-4 flex snap-x gap-4 overflow-x-auto px-4 pb-3 [scrollbar-color:var(--line)_transparent] [scrollbar-width:thin] sm:-mx-6 sm:px-6"></div>`;
         const track = section.lastElementChild;
         for (const show of row.shows)
           for (const season of show.seasons)
@@ -167,7 +203,7 @@
 
     gql(HOME, { slug }).then(render).catch((err) => {
       $('name').textContent = 'Could not load station';
-      $('status').innerHTML = `<span class="text-red-400">${err.message}</span>`;
+      $('status').innerHTML = `<span class="text-red-500">${err.message}</span>`;
     });
   </script>
 </body>
