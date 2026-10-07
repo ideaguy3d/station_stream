@@ -1,0 +1,11 @@
+.git
+node_modules
+video
+infra
+*.pdf
+*.md
+.env
+.env.*
+public/styles.css
+Dockerfile
+.dockerignore
