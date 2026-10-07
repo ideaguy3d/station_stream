@@ -1,0 +1,15 @@
+node_modules/
+.env
+*.mp4
+*.mov
+video/source/
+video/out/
+.terraform/
+*.tfstate
+*.tfstate.backup
+.DS_Store
+.env.*
+*.pem
+*.key
+*.tfvars
+.aws/
