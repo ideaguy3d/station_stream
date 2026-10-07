@@ -13,3 +13,4 @@ video/out/
 *.key
 *.tfvars
 .aws/
+public/styles.css

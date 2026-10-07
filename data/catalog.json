@@ -1,63 +1,114 @@
 {
-  "_note": "Fake catalog shaped like PBS Media Manager: franchise > show > season > episode > asset, with fields under `attributes`. Video paths are relative to VIDEO_BASE_URL.",
+  "_note": "Fake catalog shaped like PBS Media Manager: franchise > show > season > episode > asset, with fields under `attributes`. Video and image paths are relative to VIDEO_BASE_URL.",
   "franchises": [
     {
-      "id": "fr-science-hour",
+      "id": "fr-tech-frontiers",
       "type": "franchise",
-      "attributes": { "title": "Science Hour", "slug": "science-hour" },
+      "attributes": {
+        "title": "Tech Frontiers",
+        "slug": "tech-frontiers"
+      },
       "shows": [
         {
-          "id": "sh-backyard-science",
+          "id": "sh-code-lab",
           "type": "show",
           "attributes": {
-            "title": "Backyard Science",
-            "slug": "backyard-science",
-            "description_short": "Big experiments you can run with things in your garage."
+            "title": "Code Lab",
+            "slug": "code-lab",
+            "description_short": "Coding culture, one bug at a time."
           },
           "seasons": [
             {
-              "id": "se-backyard-science-1",
+              "id": "se-code-lab-1",
               "type": "season",
-              "attributes": { "ordinal": 1 },
+              "attributes": {
+                "ordinal": 1
+              },
               "episodes": [
                 {
-                  "id": "ep-backyard-science-101",
+                  "id": "ep-late-night-debugging",
                   "type": "episode",
-                  "attributes": { "title": "Bottle Rockets", "slug": "bottle-rockets", "ordinal": 1, "duration": 20 },
+                  "attributes": {
+                    "title": "Late-Night Debugging",
+                    "slug": "late-night-debugging",
+                    "ordinal": 1,
+                    "duration": 8
+                  },
                   "assets": [
                     {
-                      "id": "as-backyard-science-101",
+                      "id": "as-late-night-debugging",
                       "type": "asset",
                       "attributes": {
-                        "title": "Bottle Rockets",
+                        "title": "Late-Night Debugging",
                         "object_type": "full_length",
-                        "duration": 20,
+                        "duration": 8,
                         "availabilities": {
-                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
-                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
                         },
-                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "late-night-debugging/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "late-night-debugging/master.m3u8"
+                          }
+                        ]
                       }
                     }
                   ]
                 },
                 {
-                  "id": "ep-backyard-science-102",
+                  "id": "ep-ship-it",
                   "type": "episode",
-                  "attributes": { "title": "Kitchen Volcanoes", "slug": "kitchen-volcanoes", "ordinal": 2, "duration": 20 },
+                  "attributes": {
+                    "title": "Ship It",
+                    "slug": "ship-it",
+                    "ordinal": 2,
+                    "duration": 15
+                  },
                   "assets": [
                     {
-                      "id": "as-backyard-science-102",
+                      "id": "as-ship-it",
                       "type": "asset",
                       "attributes": {
-                        "title": "Kitchen Volcanoes",
+                        "title": "Ship It",
                         "object_type": "full_length",
-                        "duration": 20,
+                        "duration": 15,
                         "availabilities": {
-                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
-                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
                         },
-                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "ship-it/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "ship-it/master.m3u8"
+                          }
+                        ]
                       }
                     }
                   ]
@@ -67,36 +118,105 @@
           ]
         },
         {
-          "id": "sh-night-sky-notes",
+          "id": "sh-the-ai-desk",
           "type": "show",
           "attributes": {
-            "title": "Night Sky Notes",
-            "slug": "night-sky-notes",
-            "description_short": "What to look for above your town this month."
+            "title": "The AI Desk",
+            "slug": "the-ai-desk",
+            "description_short": "How machines learn to see, from the people who teach them."
           },
           "seasons": [
             {
-              "id": "se-night-sky-notes-1",
+              "id": "se-the-ai-desk-1",
               "type": "season",
-              "attributes": { "ordinal": 1 },
+              "attributes": {
+                "ordinal": 1
+              },
               "episodes": [
                 {
-                  "id": "ep-night-sky-notes-101",
+                  "id": "ep-training-the-machines",
                   "type": "episode",
-                  "attributes": { "title": "Finding Saturn", "slug": "finding-saturn", "ordinal": 1, "duration": 20 },
+                  "attributes": {
+                    "title": "Training the Machines",
+                    "slug": "training-the-machines",
+                    "ordinal": 1,
+                    "duration": 45
+                  },
                   "assets": [
                     {
-                      "id": "as-night-sky-notes-101",
+                      "id": "as-training-the-machines",
                       "type": "asset",
                       "attributes": {
-                        "title": "Finding Saturn",
+                        "title": "Training the Machines",
                         "object_type": "full_length",
-                        "duration": 20,
+                        "duration": 45,
                         "availabilities": {
-                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
-                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
                         },
-                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "training-the-machines/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "training-the-machines/master.m3u8"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "ep-inside-the-data-lab",
+                  "type": "episode",
+                  "attributes": {
+                    "title": "Inside the Data Lab",
+                    "slug": "inside-the-data-lab",
+                    "ordinal": 2,
+                    "duration": 33
+                  },
+                  "assets": [
+                    {
+                      "id": "as-inside-the-data-lab",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "Inside the Data Lab",
+                        "object_type": "full_length",
+                        "duration": 33,
+                        "availabilities": {
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": "2026-03-01T00:00:00Z"
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
+                        },
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "inside-the-data-lab/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "inside-the-data-lab/master.m3u8"
+                          }
+                        ]
                       }
                     }
                   ]
@@ -108,62 +228,157 @@
       ]
     },
     {
-      "id": "fr-local-stories",
+      "id": "fr-work-life",
       "type": "franchise",
-      "attributes": { "title": "Local Stories", "slug": "local-stories" },
+      "attributes": {
+        "title": "Work Life",
+        "slug": "work-life"
+      },
       "shows": [
         {
-          "id": "sh-river-towns",
+          "id": "sh-startup-stories",
           "type": "show",
           "attributes": {
-            "title": "River Towns",
-            "slug": "river-towns",
-            "description_short": "The small towns that grew up along the water."
+            "title": "Startup Stories",
+            "slug": "startup-stories",
+            "description_short": "Inside the small teams building what comes next."
           },
           "seasons": [
             {
-              "id": "se-river-towns-1",
+              "id": "se-startup-stories-1",
               "type": "season",
-              "attributes": { "ordinal": 1 },
+              "attributes": {
+                "ordinal": 1
+              },
               "episodes": [
                 {
-                  "id": "ep-river-towns-101",
+                  "id": "ep-pair-programming",
                   "type": "episode",
-                  "attributes": { "title": "The Ferry Landing", "slug": "the-ferry-landing", "ordinal": 1, "duration": 20 },
+                  "attributes": {
+                    "title": "Pair Programming",
+                    "slug": "pair-programming",
+                    "ordinal": 1,
+                    "duration": 7
+                  },
                   "assets": [
                     {
-                      "id": "as-river-towns-101",
+                      "id": "as-pair-programming",
                       "type": "asset",
                       "attributes": {
-                        "title": "The Ferry Landing",
+                        "title": "Pair Programming",
                         "object_type": "full_length",
-                        "duration": 20,
+                        "duration": 7,
                         "availabilities": {
-                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
-                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
                         },
-                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "pair-programming/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "pair-programming/master.m3u8"
+                          }
+                        ]
                       }
                     }
                   ]
                 },
                 {
-                  "id": "ep-river-towns-102",
+                  "id": "ep-stand-up",
                   "type": "episode",
-                  "attributes": { "title": "Mill Town Memories", "slug": "mill-town-memories", "ordinal": 2, "duration": 20 },
+                  "attributes": {
+                    "title": "Stand-Up",
+                    "slug": "stand-up",
+                    "ordinal": 2,
+                    "duration": 11
+                  },
                   "assets": [
                     {
-                      "id": "as-river-towns-102",
+                      "id": "as-stand-up",
                       "type": "asset",
                       "attributes": {
-                        "title": "Mill Town Memories",
+                        "title": "Stand-Up",
                         "object_type": "full_length",
-                        "duration": 20,
+                        "duration": 11,
                         "availabilities": {
-                          "public": { "start": "2026-01-01T00:00:00Z", "end": "2026-03-01T00:00:00Z" },
-                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
                         },
-                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "stand-up/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "stand-up/master.m3u8"
+                          }
+                        ]
+                      }
+                    }
+                  ]
+                },
+                {
+                  "id": "ep-team-huddle",
+                  "type": "episode",
+                  "attributes": {
+                    "title": "Team Huddle",
+                    "slug": "team-huddle",
+                    "ordinal": 3,
+                    "duration": 7
+                  },
+                  "assets": [
+                    {
+                      "id": "as-team-huddle",
+                      "type": "asset",
+                      "attributes": {
+                        "title": "Team Huddle",
+                        "object_type": "full_length",
+                        "duration": 7,
+                        "availabilities": {
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
+                        },
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "team-huddle/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "team-huddle/master.m3u8"
+                          }
+                        ]
                       }
                     }
                   ]
@@ -173,36 +388,61 @@
           ]
         },
         {
-          "id": "sh-main-street-kitchen",
+          "id": "sh-vertical-stories",
           "type": "show",
           "attributes": {
-            "title": "Main Street Kitchen",
-            "slug": "main-street-kitchen",
-            "description_short": "Family recipes from the diners on Main Street."
+            "title": "Vertical Stories",
+            "slug": "vertical-stories",
+            "description_short": "Shot for phones, framed for TV."
           },
           "seasons": [
             {
-              "id": "se-main-street-kitchen-1",
+              "id": "se-vertical-stories-1",
               "type": "season",
-              "attributes": { "ordinal": 1 },
+              "attributes": {
+                "ordinal": 1
+              },
               "episodes": [
                 {
-                  "id": "ep-main-street-kitchen-101",
+                  "id": "ep-behind-the-screens",
                   "type": "episode",
-                  "attributes": { "title": "Pie Day", "slug": "pie-day", "ordinal": 1, "duration": 20 },
+                  "attributes": {
+                    "title": "Behind the Screens",
+                    "slug": "behind-the-screens",
+                    "ordinal": 1,
+                    "duration": 10
+                  },
                   "assets": [
                     {
-                      "id": "as-main-street-kitchen-101",
+                      "id": "as-behind-the-screens",
                       "type": "asset",
                       "attributes": {
-                        "title": "Pie Day",
+                        "title": "Behind the Screens",
                         "object_type": "full_length",
-                        "duration": 20,
+                        "duration": 10,
                         "availabilities": {
-                          "public": { "start": "2026-01-01T00:00:00Z", "end": null },
-                          "station_members": { "start": "2026-01-01T00:00:00Z", "end": null }
+                          "public": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          },
+                          "station_members": {
+                            "start": "2026-01-01T00:00:00Z",
+                            "end": null
+                          }
                         },
-                        "videos": [{ "profile": "hls-adaptive", "format": "hls", "path": "test-pattern/master.m3u8" }]
+                        "images": [
+                          {
+                            "profile": "asset-mezzanine-16x9",
+                            "path": "behind-the-screens/poster.jpg"
+                          }
+                        ],
+                        "videos": [
+                          {
+                            "profile": "hls-adaptive",
+                            "format": "hls",
+                            "path": "behind-the-screens/master.m3u8"
+                          }
+                        ]
                       }
                     }
                   ]

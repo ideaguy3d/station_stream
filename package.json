@@ -9,14 +9,19 @@
   },
   "scripts": {
     "start": "node src/server.js",
-    "dev": "node scripts/local-cdn.js & node --watch src/server.js",
+    "build:css": "tailwindcss -i src/styles.css -o public/styles.css --minify",
+    "dev": "npm run build:css && (tailwindcss -i src/styles.css -o public/styles.css --watch=always & node scripts/local-cdn.js & node --watch src/server.js)",
     "cdn": "node scripts/local-cdn.js",
-    "video:test": "sh scripts/make-test-pattern.sh"
+    "video:encode": "scripts/encode-all.sh"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",
     "@as-integrations/express5": "^1.1.2",
     "express": "^5.2.1",
     "graphql": "^16.14.2"
+  },
+  "devDependencies": {
+    "@tailwindcss/cli": "^4.3.3",
+    "tailwindcss": "^4.3.3"
   }
 }

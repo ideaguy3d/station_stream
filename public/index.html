@@ -1,43 +1,43 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="bg-zinc-950">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Station Stream</title>
+  <link rel="stylesheet" href="/styles.css">
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
-  <style>
-    :root { --brand: #444; --bg: #0f1115; --card: #1a1d24; --text: #e8eaed; --muted: #9aa0a6; }
-    * { box-sizing: border-box; }
-    body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); }
-    header { display: flex; align-items: center; gap: 16px; padding: 16px 24px; border-bottom: 4px solid var(--brand); flex-wrap: wrap; }
-    .logo { background: var(--brand); color: #fff; font-weight: 800; padding: 8px 12px; border-radius: 6px; letter-spacing: 1px; }
-    header h1 { font-size: 20px; margin: 0; }
-    header p { margin: 2px 0 0; color: var(--muted); font-size: 14px; }
-    header select { margin-left: auto; padding: 6px 10px; border-radius: 6px; background: var(--card); color: var(--text); border: 1px solid #333; }
-    main { padding: 24px; max-width: 1100px; margin: 0 auto; }
-    video { width: 100%; max-height: 60vh; background: #000; border-radius: 8px; }
-    #status { color: var(--muted); font-size: 13px; min-height: 18px; margin: 8px 0 24px; font-family: ui-monospace, monospace; }
-    h2 { font-size: 17px; margin: 24px 0 10px; }
-    .row { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
-    .show { background: var(--card); border-radius: 8px; padding: 14px; border-top: 3px solid var(--brand); }
-    .show h3 { margin: 0 0 4px; font-size: 15px; }
-    .show .meta { color: var(--muted); font-size: 12px; margin-bottom: 10px; }
-    .ep { display: block; width: 100%; text-align: left; margin-top: 6px; padding: 8px 10px; border-radius: 6px; border: 1px solid #333; background: transparent; color: var(--text); cursor: pointer; font-size: 13px; }
-    .ep:hover:not(:disabled) { border-color: var(--brand); }
-    .ep:disabled { color: var(--muted); cursor: not-allowed; }
-    .error { color: #ff8a80; }
-  </style>
 </head>
-<body>
-  <header>
-    <div class="logo" id="callSign">…</div>
-    <div><h1 id="name">Loading…</h1><p id="tagline"></p></div>
-    <select id="stationPicker" aria-label="Choose station"></select>
+<body class="min-h-screen bg-zinc-950 text-zinc-100 antialiased">
+  <header class="sticky top-0 z-20 border-b border-white/10 bg-zinc-950/80 backdrop-blur">
+    <div class="mx-auto flex max-w-6xl flex-wrap items-center gap-4 px-4 py-3 sm:px-6">
+      <div id="callSign" class="rounded-md bg-brand px-3 py-1.5 text-sm font-black tracking-widest text-white shadow-lg shadow-brand/30">····</div>
+      <div class="min-w-0">
+        <h1 id="name" class="truncate text-lg font-semibold">Loading…</h1>
+        <p id="tagline" class="truncate text-sm text-zinc-400"></p>
+      </div>
+      <label class="ml-auto flex items-center gap-2 text-sm text-zinc-400">
+        <span class="hidden sm:inline">Station</span>
+        <select id="stationPicker" class="rounded-lg border border-white/10 bg-zinc-900 px-3 py-1.5 text-zinc-100 focus:ring-2 focus:ring-brand focus:outline-none"></select>
+      </label>
+    </div>
+    <div class="h-1 bg-brand"></div>
   </header>
-  <main>
-    <video id="video" controls playsinline></video>
-    <div id="status">Pick an episode.</div>
-    <div id="rows"></div>
+
+  <main class="mx-auto max-w-6xl px-4 py-6 sm:px-6">
+    <section class="overflow-hidden rounded-2xl bg-black shadow-2xl ring-1 ring-white/10">
+      <video id="video" controls playsinline class="aspect-video w-full bg-black"></video>
+    </section>
+
+    <div class="mt-4 flex flex-wrap items-center gap-3">
+      <div class="min-w-0 flex-1">
+        <p class="text-xs font-medium tracking-wider text-brand uppercase">Now playing</p>
+        <h2 id="nowPlaying" class="truncate text-xl font-semibold">Pick an episode below</h2>
+      </div>
+      <div id="qualityButtons" class="flex gap-1 rounded-lg bg-zinc-900 p-1 ring-1 ring-white/10"></div>
+    </div>
+    <p id="status" class="mt-2 font-mono text-xs text-zinc-500"></p>
+
+    <div id="rows" class="mt-8 space-y-10"></div>
   </main>
 
   <script>
@@ -61,30 +61,79 @@
       station(slug: $slug) {
         callSign name tagline brandColor
         homeRows { title shows { title description franchise { title }
-          seasons { number episodes { title number durationSeconds
+          seasons { number episodes { title number durationSeconds imageUrl
             fullLength { availability hlsUrl } } } } }
       }
     }`;
 
+    const fmtTime = (s) => `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+
+    // Quality picker: "Auto" lets hls.js choose by bandwidth; a number pins one rendition.
+    function renderQualityButtons() {
+      const box = $('qualityButtons');
+      if (!hls || hls.levels.length < 2) { box.innerHTML = ''; return; }
+      const options = [['Auto', -1], ...hls.levels.map((l, i) => [`${l.height}p`, i]).reverse()];
+      box.innerHTML = '';
+      for (const [label, level] of options) {
+        const active = level === -1 ? hls.autoLevelEnabled : !hls.autoLevelEnabled && hls.currentLevel === level;
+        const b = document.createElement('button');
+        b.textContent = label;
+        b.className = active
+          ? 'rounded-md bg-brand px-3 py-1 text-xs font-semibold text-white'
+          : 'rounded-md px-3 py-1 text-xs font-medium text-zinc-400 hover:bg-white/5 hover:text-zinc-100';
+        b.onclick = () => { hls.currentLevel = level; renderQualityButtons(); updateStatus(); };
+        box.appendChild(b);
+      }
+    }
+
+    function updateStatus() {
+      const lvl = hls.levels[hls.currentLevel];
+      if (!lvl) return;
+      const quality = lvl.height ? `${lvl.height}p @ ${Math.round(lvl.bitrate / 1000)} kbps` : 'single rendition';
+      $('status').textContent = `${quality} · ${hls.levels.length} renditions · ${hls.autoLevelEnabled ? 'auto' : 'manual'} · from ${new URL(hls.url).host}`;
+    }
+
     function play(url, label) {
       const video = $('video');
       if (hls) { hls.destroy(); hls = null; }
-      $('status').textContent = `Loading ${label} from ${new URL(url).host}`;
+      $('nowPlaying').textContent = label;
+      $('status').textContent = `Loading from ${new URL(url).host}…`;
       if (window.Hls && Hls.isSupported()) {
         hls = new Hls();
-        hls.on(Hls.Events.LEVEL_SWITCHED, (_, d) => {
-          const lvl = hls.levels[d.level];
-          const quality = lvl.height ? `${lvl.height}p @ ${Math.round(lvl.bitrate / 1000)} kbps` : 'single rendition, no bitrate info';
-          $('status').textContent = `Playing ${label} · ${quality} · ${hls.levels.length} quality level(s)`;
-        });
+        hls.on(Hls.Events.MANIFEST_PARSED, renderQualityButtons);
+        hls.on(Hls.Events.LEVEL_SWITCHED, () => { updateStatus(); renderQualityButtons(); });
         hls.on(Hls.Events.ERROR, (_, d) => { if (d.fatal) $('status').textContent = `Video error: ${d.details}`; });
         hls.loadSource(url);
         hls.attachMedia(video);
       } else if (video.canPlayType('application/vnd.apple.mpegurl')) {
         video.src = url; // Safari plays HLS natively
-        $('status').textContent = `Playing ${label} (native HLS)`;
+        $('status').textContent = `Native HLS · from ${new URL(url).host}`;
       }
       video.play().catch(() => {});
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function episodeCard(show, season, ep) {
+      const asset = ep.fullLength;
+      const playable = asset && asset.hlsUrl;
+      const label = `${show.title} · S${season.number}E${ep.number} ${ep.title}`;
+      const card = document.createElement('button');
+      card.className = 'group w-64 shrink-0 snap-start text-left sm:w-72 disabled:cursor-not-allowed';
+      card.disabled = !playable;
+      card.innerHTML = `
+        <div class="relative aspect-video overflow-hidden rounded-xl bg-zinc-800 ring-1 ring-white/10 transition group-enabled:group-hover:ring-2 group-enabled:group-hover:ring-brand">
+          ${ep.imageUrl ? `<img src="${ep.imageUrl}" alt="" loading="lazy" class="h-full w-full object-cover transition duration-300 group-enabled:group-hover:scale-105 ${playable ? '' : 'opacity-40 grayscale'}">` : ''}
+          <div class="absolute inset-0 bg-gradient-to-t from-black/70 via-transparent"></div>
+          ${playable
+            ? `<div class="absolute inset-0 grid place-items-center opacity-0 transition group-hover:opacity-100">
+                 <span class="grid size-12 place-items-center rounded-full bg-brand text-lg text-white shadow-lg">▶</span></div>`
+            : `<span class="absolute top-2 left-2 rounded-full bg-black/70 px-2.5 py-1 text-xs font-semibold text-amber-300 ring-1 ring-amber-300/40">🔒 Members only</span>`}
+          <span class="absolute right-2 bottom-2 rounded bg-black/70 px-1.5 py-0.5 font-mono text-xs">${fmtTime(ep.durationSeconds)}</span>
+        </div>
+        <p class="mt-2 truncate text-sm font-semibold">${ep.title}</p>
+        <p class="truncate text-xs text-zinc-400">${show.title} · S${season.number} E${ep.number}</p>`;
+      if (playable) card.onclick = () => play(asset.hlsUrl, label);
+      return card;
     }
 
     function render(data) {
@@ -94,7 +143,7 @@
       if (!st) { $('name').textContent = `No station "${slug}"`; return; }
 
       document.documentElement.style.setProperty('--brand', st.brandColor);
-      document.title = st.name;
+      document.title = `${st.name} · Station Stream`;
       $('callSign').textContent = st.callSign;
       $('name').textContent = st.name;
       $('tagline').textContent = st.tagline || '';
@@ -103,27 +152,13 @@
       rows.innerHTML = '';
       for (const row of st.homeRows) {
         const section = document.createElement('section');
-        section.innerHTML = `<h2>${row.title}</h2><div class="row"></div>`;
-        for (const show of row.shows) {
-          const card = document.createElement('div');
-          card.className = 'show';
-          card.innerHTML = `<h3>${show.title}</h3><div class="meta">${show.franchise.title} · ${show.description || ''}</div>`;
-          for (const season of show.seasons) for (const ep of season.episodes) {
-            const btn = document.createElement('button');
-            btn.className = 'ep';
-            const asset = ep.fullLength;
-            const label = `S${season.number}E${ep.number} ${ep.title}`;
-            if (asset && asset.hlsUrl) {
-              btn.textContent = `▶ ${label}`;
-              btn.onclick = () => play(asset.hlsUrl, label);
-            } else {
-              btn.textContent = `🔒 ${label} (${asset ? asset.availability.toLowerCase() : 'unavailable'})`;
-              btn.disabled = true;
-            }
-            card.appendChild(btn);
-          }
-          section.querySelector('.row').appendChild(card);
-        }
+        section.innerHTML = `
+          <h3 class="mb-3 flex items-center gap-2 text-lg font-semibold"><span class="h-5 w-1 rounded bg-brand"></span>${row.title}</h3>
+          <div class="-mx-4 flex snap-x gap-4 overflow-x-auto px-4 pb-3 sm:-mx-6 sm:px-6"></div>`;
+        const track = section.lastElementChild;
+        for (const show of row.shows)
+          for (const season of show.seasons)
+            for (const ep of season.episodes) track.appendChild(episodeCard(show, season, ep));
         rows.appendChild(section);
       }
     }
@@ -132,7 +167,7 @@
 
     gql(HOME, { slug }).then(render).catch((err) => {
       $('name').textContent = 'Could not load station';
-      $('status').innerHTML = `<span class="error">${err.message}</span>`;
+      $('status').innerHTML = `<span class="text-red-400">${err.message}</span>`;
     });
   </script>
 </body>

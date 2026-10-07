@@ -38,6 +38,8 @@ export const typeDefs = `#graphql
     slug: String!
     title: String!
     description: String
+    "Thumbnail from the first episode."
+    imageUrl: String
     franchise: Franchise!
     seasons: [Season!]!
   }
@@ -54,6 +56,7 @@ export const typeDefs = `#graphql
     title: String!
     number: Int!
     durationSeconds: Int!
+    imageUrl: String
     assets: [Asset!]!
     "The full_length asset, if there is one."
     fullLength: Asset
@@ -81,6 +84,12 @@ function availability(asset, now = new Date()) {
 }
 
 export function makeResolvers({ catalog, videoBaseUrl }) {
+  const fullLength = (ep) => ep.assets.find((a) => a.object_type === 'full_length') ?? null;
+  const episodeImage = (ep) => {
+    const path = fullLength(ep)?.images?.[0]?.path;
+    return path ? `${videoBaseUrl}/${path}` : null;
+  };
+
   return {
     Query: {
       stations: () => catalog.stations,
@@ -90,8 +99,12 @@ export function makeResolvers({ catalog, videoBaseUrl }) {
     HomeRow: {
       shows: (row) => row.shows.map((slug) => catalog.showsBySlug.get(slug)),
     },
+    Show: {
+      imageUrl: (show) => episodeImage(show.seasons[0].episodes[0]),
+    },
     Episode: {
-      fullLength: (ep) => ep.assets.find((a) => a.object_type === 'full_length') ?? null,
+      fullLength,
+      imageUrl: episodeImage,
     },
     Asset: {
       objectType: (a) => a.object_type,

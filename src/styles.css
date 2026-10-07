@@ -1,0 +1,11 @@
+@import "tailwindcss";
+@source "../public";
+
+/* Each station sets --brand at runtime; bg-brand, text-brand, ring-brand/40 etc. follow it. */
+@theme inline {
+  --color-brand: var(--brand);
+}
+
+:root {
+  --brand: #71717a;
+}
