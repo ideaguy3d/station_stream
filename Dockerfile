@@ -10,6 +10,8 @@ RUN npm run build:css
 # Stage 2: runtime image with production deps only.
 FROM node:24-alpine
 ENV NODE_ENV=production PORT=4000
+# Pick up OS security patches even when the base image lags behind Alpine.
+RUN apk upgrade --no-cache
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
