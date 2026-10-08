@@ -16,3 +16,6 @@ video/out/
 public/styles.css
 tfplan
 *.tfplan
+gcp/hosting-dist/
+.firebase/
+firebase-debug.log

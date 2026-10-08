@@ -3,7 +3,7 @@ name: Deploy
 on:
   push:
     branches: [main]
-    paths-ignore: ["docs/**", "**.md", "terraform/**", "infra/iam/**"]   # docs, app 2 and IAM files don't redeploy app 1
+    paths-ignore: ["docs/**", "**.md", "terraform/**", "infra/iam/**", "gcp/**", "scripts/build-hosting.sh"]   # docs, app 2, IAM and GCP files don't redeploy app 1
   workflow_dispatch:                      # "Run workflow" button for manual deploys
 
 permissions:

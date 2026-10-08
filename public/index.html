@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Station Stream</title>
   <link rel="stylesheet" href="/styles.css">
+  <!-- Sets window.STATION_STREAM.apiBase: '' (same origin) on ECS; the AWS API URL on Firebase Hosting. -->
+  <script src="/config.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/hls.js@1.7.3/dist/hls.min.js"></script>
 </head>
 <body class="min-h-screen bg-canvas text-ink antialiased transition-colors">
@@ -69,16 +71,19 @@
   </main>
 
   <footer class="border-t border-line py-6 text-center text-xs text-muted">
-    <span id="footerName"></span> · powered by one shared Station Stream platform
+    <span id="footerName"></span> · powered by one shared Station Stream platform · <span id="apiHost"></span>
   </footer>
 
   <script>
     const $ = (id) => document.getElementById(id);
     const slug = new URLSearchParams(location.search).get('station') || 'north';
     let hls;
+    // Where the GraphQL API lives. Empty = the server that sent this page.
+    const API_BASE = window.STATION_STREAM?.apiBase || '';
+    $('apiHost').textContent = `API: ${API_BASE ? new URL(API_BASE).host : location.host}`;
 
     async function gql(query, variables) {
-      const res = await fetch('/graphql', {
+      const res = await fetch(`${API_BASE}/graphql`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query, variables }),

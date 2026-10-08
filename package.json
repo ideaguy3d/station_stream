@@ -12,7 +12,8 @@
     "build:css": "tailwindcss -i src/styles.css -o public/styles.css --minify",
     "dev": "npm run build:css && (tailwindcss -i src/styles.css -o public/styles.css --watch=always & node scripts/local-cdn.js & node --watch src/server.js)",
     "cdn": "node scripts/local-cdn.js",
-    "video:encode": "scripts/encode-all.sh"
+    "video:encode": "scripts/encode-all.sh",
+    "build:hosting": "scripts/build-hosting.sh"
   },
   "dependencies": {
     "@apollo/server": "^5.5.1",

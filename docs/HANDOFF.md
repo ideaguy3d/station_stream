@@ -88,7 +88,7 @@ Supersedes the earlier "copy the whole app onto GCP" idea. Brainstormed 2026-10-
 | Aurora Serverless + Prisma | Back in scope **for later** (Terraform on app 2): catalog in Postgres, likes in MongoDB, mirroring the likely real split. Not before the interview unless time allows. |
 | Who drives | **Claude drives** (browser console + CLI) and explains, same as AWS. |
 
-**Status 2026-10-08:** G0 done (project `station-stream-2026`, Firebase on Blaze, site https://station-stream-2026.web.app). G1 done: app 2's API over HTTPS at **https://d1436kyrcdypmk.cloudfront.net** with CORS for the web.app/firebaseapp.com origins (image `461037e`). Decisions: CloudFront in front of ALB, anonymous Firebase Auth, Aurora after the interview. Details in [gcp-breadcrumbs.md](gcp-breadcrumbs.md).
+**Status 2026-10-08:** G0 done (project `station-stream-2026`, Firebase on Blaze, site https://station-stream-2026.web.app). G1 done: app 2's API over HTTPS at **https://d1436kyrcdypmk.cloudfront.net** with CORS for the web.app/firebaseapp.com origins (image `461037e`). G2 done: UI live at **https://station-stream-2026.web.app** (build: `API_BASE=… npm run build:hosting`, deploy: `cd gcp && firebase deploy --only hosting`). Decisions: CloudFront in front of ALB, anonymous Firebase Auth, Aurora after the interview. Details in [gcp-breadcrumbs.md](gcp-breadcrumbs.md).
 
 ### Open questions (settled 2026-10-08, see status above)
 1. HTTPS for the API: **CloudFront in front of ALB** (recommended) vs. a Cloud Function proxy (server-to-server avoids mixed content, but adds the cross-cloud hop to every request).

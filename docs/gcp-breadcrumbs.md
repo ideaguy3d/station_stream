@@ -221,3 +221,69 @@ curl -s -H "Authorization: Bearer $T" -H "x-goog-user-project: station-stream-20
 ```
 
 **G0 done.** Next: G1, CloudFront in front of app 2's ALB + CORS for `https://station-stream-2026.web.app` (Terraform, AWS side).
+
+---
+
+## G2: Web UI on Firebase Hosting, calling the AWS API
+
+### G2.1 ✅ Make the page's API address configurable (build-time config)
+
+**What & why:** the page used to call `fetch('/graphql')`: same origin, because ECS served both page and API. On Firebase the API lives on another origin. So `public/index.html` now loads `/config.js` first and calls `${API_BASE}/graphql`:
+
+- In the repo, `public/config.js` = `apiBase: ''` (same origin). ECS keeps working unchanged.
+- The Firebase build writes its own `config.js` with the AWS API URL. Same page, environment-specific value injected at build time.
+- The footer shows `API: <host>`, handy for demos.
+
+`styles.css` is built by Tailwind and git-ignored, so Hosting needs a build step anyway: [scripts/build-hosting.sh](../scripts/build-hosting.sh) (`npm run build:hosting`) builds CSS, copies `public/` to `gcp/hosting-dist/` (git-ignored) and writes `config.js`. Cloud Build will run the same script in G4.
+
+```bash
+API_BASE=https://d1436kyrcdypmk.cloudfront.net npm run build:hosting
+# Built gcp/hosting-dist with apiBase=https://d1436kyrcdypmk.cloudfront.net  (config.js, index.html, styles.css)
+```
+
+**Negative test (CORS doing its job):** served `gcp/hosting-dist` from `http://localhost:5055`, an origin **not** on the API's allowlist. The page showed "Could not load station" / **`Failed to fetch`**. Browsers deliberately hide the CORS reason from page code (it only shows in DevTools), so a hostile page can't probe other servers through error messages.
+
+### G2.2 ✅ Firebase config in `gcp/`
+
+```jsonc
+// gcp/firebase.json
+{ "hosting": { "public": "hosting-dist", "ignore": ["firebase.json", "**/.*"],
+  "headers": [{ "source": "**", "headers": [{ "key": "Cache-Control", "value": "no-cache" }] }] } }
+// gcp/.firebaserc
+{ "projects": { "default": "station-stream-2026" } }
+```
+
+`no-cache` = "browsers may keep a copy but must ask first" (a cheap `304 Not Modified` via ETag), so a new deploy shows up immediately. `.github/workflows/deploy.yml` now also ignores `gcp/**` and `scripts/build-hosting.sh`, so GCP-only commits don't redeploy AWS app 1.
+
+### G2.3 ✅ Firebase CLI login
+
+**What & why:** `firebase` keeps its own credentials (separate from gcloud's), so it needs its own OAuth login (localhost redirect on port 9005, scopes `firebase` + `cloud-platform`). Answered **No** to "Enable Gemini in Firebase" and to usage reporting. G4 (Cloud Build) will deploy as a service account instead, with no personal login.
+
+```bash
+firebase login            # owner, in the Terminal tab; browser approval
+firebase projects:list    # station-stream │ station-stream-2026 │ 203966301167
+```
+
+### G2.4 ✅ Deploy
+
+**What & why:** `firebase deploy --only hosting` uploads only changed files (content-hashed), **finalizes a version** and **releases** it: Hosting's version of a task-definition revision + service update. Every release is kept, so rollback is one click (Hosting → Release history → Roll back) or `firebase hosting:rollback`.
+
+```bash
+cd gcp && firebase deploy --only hosting --project station-stream-2026
+# found 3 files in hosting-dist → version finalized → release complete
+# Hosting URL: https://station-stream-2026.web.app
+```
+
+**Console:** Firebase console → Hosting → Release history (each deploy, who, when, file count).
+
+**Check:**
+```bash
+curl -sI https://station-stream-2026.web.app/ | grep -i -E '^HTTP|cache-control|strict-transport|x-served-by'
+# HTTP/2 200 · cache-control: no-cache · strict-transport-security … preload · x-served-by: cache-sjc… (CDN edge, San Jose)
+curl -s https://station-stream-2026.web.app/config.js
+# window.STATION_STREAM = { apiBase: 'https://d1436kyrcdypmk.cloudfront.net' };
+```
+
+**Result in the browser:** https://station-stream-2026.web.app/?station=north loads North Valley from the AWS API (8 episodes, 7 playable; footer `API: d1436kyrcdypmk.cloudfront.net`) and plays HLS at 720p from app 2's video CloudFront `d990usezj0kzv.cloudfront.net`. `https://station-stream-2026.firebaseapp.com/?station=south` loads Gulf Coast with its own theme. `http://` → `301` to `https://` (Firebase also sends **HSTS**: browsers will only ever use HTTPS for `web.app`).
+
+**Cross-cloud path of one page view:** browser → Firebase Hosting CDN (GCP) for HTML/CSS/JS → CloudFront `d1436…` → ALB → ECS task (AWS) for GraphQL → CloudFront `d990…` → S3 (AWS) for video.
