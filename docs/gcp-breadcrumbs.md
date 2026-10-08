@@ -538,3 +538,82 @@ Hosting → Release history: newest release by `cloudbuild-deployer@…` with me
 | default compute SA | nothing any more | still has Editor: remove it (G0.7) once nothing depends on it |
 
 **G4 done.**
+
+---
+
+## G5: Cross-cloud observability: GCP watches the AWS API
+
+**What & why:** Cloud Monitoring's **uptime checks** call a URL from Google probes in several regions and record pass/fail and latency. Pointing one at the AWS API (`https://d1436kyrcdypmk.cloudfront.net/health`, i.e. CloudFront → ALB → ECS, the exact path the Firebase UI uses) gives an **outside-in** view: it catches what CloudWatch alarms inside AWS can miss (DNS, CloudFront, TLS certificate, or the whole region being unreachable from the internet). A probe that lives in the same system it watches goes down with it.
+
+Done from the CLI / REST API: the browser pane was hidden, so console clicks weren't possible. Console paths are listed for each piece.
+
+**Cost:** uptime checks: first 1M executions/month free; 1/min × 4 regions ≈ 175k/month → free. Alert policy: cents/month at most.
+
+### G5.1 ✅ Uptime check
+
+```bash
+gcloud monitoring uptime create "AWS API health (app 2 via CloudFront)" \
+  --resource-type=uptime-url \
+  --resource-labels=host=d1436kyrcdypmk.cloudfront.net,project_id=station-stream-2026 \
+  --protocol=https --path=/health --validate-ssl=true \   # also fails if the TLS certificate is bad
+  --period=1 --timeout=10 \                               # every minute, 10 s timeout
+  --matcher-type=contains-string --matcher-content='"status":"ok"' \   # 200 isn't enough: the body must say ok
+  --regions=usa-iowa,usa-oregon,usa-virginia,europe \     # min 3; matches CloudFront PriceClass_100 (NA + EU edges)
+  --user-labels=project=station-stream
+# → uptimeCheckConfigs/aws-api-health-app-2-via-cloudfront-NctXop3OcQE
+```
+(The inline `# comments` are for reading; remove them to run it.)
+
+**Console:** Monitoring → Detect → Uptime checks → Create uptime check → Protocol HTTPS, Resource type URL, Hostname `d1436kyrcdypmk.cloudfront.net`, Path `/health`, Frequency 1 minute → More target options: regions → Response validation: *Response content contains* `"status":"ok"` → …
+
+### G5.2 ✅ Email notification channel
+
+GCP's version of the SNS email subscription; **no confirmation click** needed (unlike SNS). Created with the REST API because `gcloud monitoring channels` only exists in the beta component:
+
+```bash
+T=$(gcloud auth print-access-token)
+curl -s -X POST "https://monitoring.googleapis.com/v3/projects/station-stream-2026/notificationChannels" \
+  -H "Authorization: Bearer $T" -H "x-goog-user-project: station-stream-2026" -H 'content-type: application/json' \
+  -d '{"type":"email","displayName":"Owner email (julius@ranklab.org)","labels":{"email_address":"julius@ranklab.org"}}'
+# → notificationChannels/2497747955534396669
+```
+
+**Console:** Monitoring → Alerting → Edit notification channels → Email → Add new.
+
+### G5.3 ✅ Alert policy: fire only when 2+ regions agree
+
+```text
+metric     monitoring.googleapis.com/uptime_check/check_passed   (one bool per region per minute)
+per series ALIGN_NEXT_OLDER, 60 s     → the latest result per region
+across     REDUCE_COUNT_FALSE          → how many regions are failing
+fire when  > 1  for 120 s              → at least 2 of 4 regions, sustained 2 minutes
+auto-close after 30 min of OK · notify channel 2497747955534396669 · documentation = mini runbook
+```
+
+**Why 2 regions × 2 minutes:** one region's network blip or one slow request shouldn't page a human. **Alert fatigue** (too many false alarms, so people stop reading them) is a reliability problem in its own right. Cost of the choice: a real outage alerts in about 3 minutes instead of 1.
+
+The policy's **documentation** field is a short runbook included in every alert email: what's affected (the Firebase UI can't load stations), first commands to run, where the real runbook lives.
+
+```bash
+curl -s -X POST "https://monitoring.googleapis.com/v3/projects/station-stream-2026/alertPolicies" \
+  -H "Authorization: Bearer $T" -H "x-goog-user-project: station-stream-2026" -H 'content-type: application/json' \
+  -d @policy.json
+# → alertPolicies/10462351920679932231  enabled=true
+```
+policy.json: `conditionThreshold` with the filter `metric.type="monitoring.googleapis.com/uptime_check/check_passed" AND metric.label.check_id="aws-api-health-app-2-via-cloudfront-NctXop3OcQE" AND resource.type="uptime_url"`, the aggregation above, `comparison: COMPARISON_GT`, `thresholdValue: 1`, `duration: 120s`.
+
+**Console:** Monitoring → Alerting → Create policy → metric *Uptime Check URL › Uptime_check › Check passed* → filter check_id → rolling window 1 min, function *next older* → across time series: *count false* → threshold *above 1* for 2 min → notification channel → documentation.
+
+**Check:**
+```bash
+gcloud monitoring uptime list-configs
+# per-region pass/fail (metrics appear 5-10 min after the check is created):
+curl -s -G "https://monitoring.googleapis.com/v3/projects/station-stream-2026/timeSeries" \
+  -H "Authorization: Bearer $T" -H "x-goog-user-project: station-stream-2026" \
+  --data-urlencode 'filter=metric.type="monitoring.googleapis.com/uptime_check/check_passed" AND metric.label.check_id="aws-api-health-app-2-via-cloudfront-NctXop3OcQE"' \
+  --data-urlencode "interval.startTime=$(date -u -v-10M +%FT%TZ)" --data-urlencode "interval.endTime=$(date -u +%FT%TZ)"
+```
+
+**Result (first ~10 minutes):** `check_passed = true` from usa-virginia, usa-oregon and eur-belgium (usa-iowa's first results lag); `request_latency` ≈ 170 ms (Oregon) and 196 ms (Belgium). Every probe crosses to the ALB in us-east-1, since CloudFront caching is off for the API.
+
+**G5 done.** GCP now watches AWS from outside; an outage of the API emails julius@ranklab.org within ~3 minutes, with a runbook in the email.
