@@ -314,7 +314,7 @@ Result: `Cluster0`, MongoDB 8.0, **GCP / Iowa (us-central1)** (same region as th
 - The DB user `julius_db_user` has **atlasAdmin**. Least privilege = a separate app user with `readWrite@station_stream` only.
 - The password was pasted into a chat transcript. Rotate it: Atlas → Database Users → Edit → **Autogenerate Secure Password** → Copy, then `pbpaste | gcloud secrets versions add atlas-uri --data-file=-` with the full new connection string, and redeploy the function (or point it at a pinned version). The old version can then be disabled: `gcloud secrets versions disable 1 --secret=atlas-uri`.
 
-### G3.1 ⏳ Atlas network access: `0.0.0.0/0` (owner's click)
+### G3.1 ✅ Atlas network access: `0.0.0.0/0` (owner's click)
 
 **What & why:** Atlas only accepts connections from IPs on the project's **IP Access List**; auto-setup added only the owner's home IP. Cloud Run functions have **no fixed outgoing IP**. The proper fixes cost money or need a paid tier: **Cloud NAT with a static IP** (route egress through one address and allow just that), or **Private Endpoint / VPC peering** (not available on M0). So: allow `0.0.0.0/0` and rely on the other layers, **TLS** (always on with `mongodb+srv`) and a **strong password**. Claude's attempt to add it was blocked by its safety classifier ("security weaken"), correctly: it's the owner's call.
 
@@ -419,3 +419,16 @@ gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.serv
 - Firebase JS SDK pinned to **12.19.0** (a month old). 13.0.0 had been released the day before: not the day to adopt a new major version.
 
 **Graceful degradation (seen live before G3.1):** hearts shown, the function verified the token, the database was unreachable → clean `503 likes are temporarily unavailable` after 5 s; the catalog and video kept working.
+
+### G3.8 ✅ End to end, after the owner added `0.0.0.0/0`
+
+The function retried by itself (the failed connection promise was reset), no redeploy needed:
+```
+list   {"likes":[]}                                 200  1.44 s   ← first request: TLS + find the primary + createIndex
+like   {"episodeId":"ep-test-cloud","liked":true}   200  0.36 s   ← connection reused
+list   {"likes":["ep-test-cloud"]}                  200  0.38 s
+unlike {"episodeId":"ep-test-cloud","liked":false}  200  0.22 s
+```
+**In the browser:** like "Training the Machines" (♡ → ♥), **reload** → still ♥, the others ♡. Proves the chain: anonymous uid restored from IndexedDB → fresh ID token → function verifies it → MongoDB lookup by uid. The document is visible in Atlas → Data Explorer → `station_stream.likes` (`uid`, `episodeId`, `likedAt`).
+
+**G3 done.** Next: G4, Cloud Build trigger on push to `main` that builds and deploys Hosting + the function as a least-privilege build service account.
