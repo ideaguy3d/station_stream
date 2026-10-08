@@ -708,7 +708,7 @@ aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-nam
 
 **Lesson:** the viewer-facing signal (`elb-5xx`) caught a 30-second blip that the capacity signals missed. Alert on what users experience, and use capacity alarms for longer outages. Also: alarms lag. Detection took ~2.5 min, longer than the outage itself.
 
-**What would remove the blip:** with 2 tasks (or `minimumHealthyPercent` covering manual stops via a second task) the load balancer always has someone to send to. One task is a single point of failure; we accept that to save money.
+**What would remove the blip:** `minimumHealthyPercent=100` only protects **deployments** (start new before stopping old). It does nothing for a crash or a manual stop. The only protection there is **2+ tasks in different zones**, so the load balancer always has someone to send to. One task is a single point of failure; we accept that here to save money.
 
 **Check:**
 ```bash
