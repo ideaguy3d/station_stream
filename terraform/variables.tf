@@ -12,13 +12,19 @@ variable "region" {
 variable "image_tag" {
   description = "Which image (git commit) the service runs."
   type        = string
-  default     = "0c5fffd"
+  default     = "461037e"
 }
 
 variable "alert_email" {
   description = "Where alarm emails go. AWS sends a confirmation link first."
   type        = string
   default     = "julius@ranklab.org"
+}
+
+variable "cors_origins" {
+  description = "Web origins allowed to call /graphql from a browser (the Firebase-hosted UI)."
+  type        = list(string)
+  default     = ["https://station-stream-2026.web.app", "https://station-stream-2026.firebaseapp.com"]
 }
 
 variable "video_dir" {

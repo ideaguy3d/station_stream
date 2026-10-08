@@ -31,6 +31,7 @@ resource "aws_ecs_task_definition" "app" {
       { name = "APP_VERSION", value = var.image_tag },
       # Wired automatically to this app's own CloudFront: the step app 1 needed a manual revision for.
       { name = "VIDEO_BASE_URL", value = "https://${aws_cloudfront_distribution.video.domain_name}" },
+      { name = "CORS_ORIGINS", value = join(",", var.cors_origins) },
     ]
     stopTimeout = 30
     logConfiguration = {

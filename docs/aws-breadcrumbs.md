@@ -31,7 +31,7 @@ Status markers: ✅ done · ❌ failed first (the error and the fix are the inte
 | ECR repo | `897744507899.dkr.ecr.us-east-1.amazonaws.com/station-stream` |
 | GitHub deploy role | `arn:aws:iam::897744507899:role/station-stream-github-deploy` (OIDC provider `token.actions.githubusercontent.com`) |
 | Video bucket | `station-stream-video-897744507899` |
-| **App 2 (Terraform)** | http://station-stream-tf-alb-862429135.us-east-1.elb.amazonaws.com · CloudFront `d990usezj0kzv.cloudfront.net` · everything named `station-stream-tf-*` · state in `terraform/terraform.tfstate` |
+| **App 2 (Terraform)** | http://station-stream-tf-alb-862429135.us-east-1.elb.amazonaws.com · **API over HTTPS https://d1436kyrcdypmk.cloudfront.net** (`E7BB4SHJWN2O6`) · video CloudFront `d990usezj0kzv.cloudfront.net` · everything named `station-stream-tf-*` · state in `terraform/terraform.tfstate` |
 | CloudFront distribution | `E285IGXEWUIGEW` → https://d22r43ct06qav3.cloudfront.net (OAC `E10UJH60KSW2B5`) |
 
 ---
@@ -936,6 +936,96 @@ terraform plan -detailed-exitcode   # exit 0 = "No changes"; 2 = something diffe
 **Destroying app 2 later** is one command (bucket and repo have `force_destroy`/`force_delete` so they empty themselves):
 ```bash
 cd terraform && terraform destroy
+```
+
+---
+
+## Phase G1: HTTPS + CORS so the GCP-hosted UI can call app 2 (Terraform)
+
+Part of the GCP plan ([HANDOFF.md](HANDOFF.md) section 4, GCP log in [gcp-breadcrumbs.md](gcp-breadcrumbs.md)). The web UI moves to Firebase Hosting at `https://station-stream-2026.web.app`, which is HTTPS-only. App 2's API is plain HTTP on the ALB, so two browser rules would block the calls:
+
+- **Mixed content:** an HTTPS page may not call an `http://` API. Fix: CloudFront in front of the ALB gives it free `https://*.cloudfront.net`.
+- **CORS (Cross-Origin Resource Sharing):** a page on one origin (scheme + host + port) can't read responses from another origin unless the server says so with `Access-Control-Allow-Origin`. Fix: CORS middleware in the API.
+
+Done in **Terraform, not the console**: app 2 is owned by Terraform, so console edits would be **drift** that the next `apply` reverts. Starting point: `terraform plan` → *No changes* (no drift).
+
+### G1.1 ✅ CORS in the API (code, both apps)
+
+**What & why:** the `cors` Express middleware answers the browser's **preflight** (an automatic `OPTIONS` request sent before a cross-origin `POST` with a JSON body) and adds `Access-Control-Allow-Origin` only for origins listed in the `CORS_ORIGINS` env var. Empty (app 1) = same-origin only, which is all the built-in player needs. `maxAge: 600` lets browsers skip the preflight for 10 minutes. CORS is enforced **by the browser**, not the server: `curl` ignores it, so it's not authentication; it only decides which web pages may read responses.
+
+```js
+app.use('/graphql', cors({ origin: CORS_ORIGINS, methods: ['GET', 'POST'], maxAge: 600 }), express.json(), expressMiddleware(apollo));
+```
+
+**Check (local, before shipping):**
+```bash
+PORT=4100 CORS_ORIGINS=https://station-stream-2026.web.app node src/server.js &
+# allowed origin → 204 + Access-Control-Allow-Origin: https://station-stream-2026.web.app
+curl -si -X OPTIONS localhost:4100/graphql -H 'Origin: https://station-stream-2026.web.app' -H 'Access-Control-Request-Method: POST'
+# other origin → 204 but NO Allow-Origin header, so a browser blocks it
+curl -si -X OPTIONS localhost:4100/graphql -H 'Origin: https://evil.example' -H 'Access-Control-Request-Method: POST'
+```
+
+Shipped as commit `461037e`. The push ran the GitHub Actions deploy, so app 1 got the same code (no `CORS_ORIGINS`, behavior unchanged).
+
+### G1.2 ✅ CloudFront in front of app 2's ALB
+
+**What & why:** a second distribution ([api_cdn.tf](../terraform/api_cdn.tf)), origin = the ALB over **HTTP** (`origin_protocol_policy = "http-only"`: the ALB has no certificate, HTTPS ends at CloudFront). Two managed policies, looked up by name:
+
+- **`Managed-CachingDisabled`**: GraphQL answers are per-request `POST`s. Caching would serve one user's answer to another.
+- **`Managed-AllViewerExceptHostHeader`** (origin request policy): forwards every viewer header (including `Origin` and `Access-Control-Request-*`, which CORS needs) and query strings, except `Host`, which CloudFront sets to the ALB's own name.
+
+`allowed_methods` must be the full 7 (CloudFront only offers 2, 3 or 7), because the API needs `POST` and `OPTIONS`. No hourly cost: CloudFront bills per request/GB, inside the free tier at our traffic.
+
+Also: `CORS_ORIGINS` in the task definition from `var.cors_origins` (`https://station-stream-2026.web.app`, `https://station-stream-2026.firebaseapp.com`), and a new output `api_url`.
+
+```bash
+cd terraform && export AWS_PROFILE=station-stream AWS_REGION=us-east-1
+terraform fmt && terraform validate
+terraform plan
+# Plan: 2 to add, 1 to change, 1 to destroy
+#  + aws_cloudfront_distribution.api
+#  ~ aws_ecs_service.app             (points at the new revision → rolling deploy)
+#  -/+ aws_ecs_task_definition.app   ("destroy" = retiring revision 1; task defs are never edited, only replaced)
+```
+
+**Console (what this would be by hand):** CloudFront → Create distribution → Origin: pick the ALB (`station-stream-tf-alb-…`), Protocol **HTTP only** → Default cache behavior: Viewer protocol **Redirect HTTP to HTTPS**, Allowed methods **GET, HEAD, OPTIONS, PUT, POST, PATCH, DELETE**, Cache policy **CachingDisabled**, Origin request policy **AllViewerExceptHostHeader** → Price class: North America and Europe → Create. Then ECS → Task definitions → `station-stream-tf` → Create new revision → add env `CORS_ORIGINS` → Update service.
+
+### G1.3 ✅ Ship the CORS image to app 2 and apply
+
+**What & why:** app 2 runs images from its own repo `station-stream-tf`, pinned by `var.image_tag`. Copy the image GitHub Actions built for `461037e` (same pattern as 9.2), then apply the plan with the new tag, so the env var and the code that reads it arrive together.
+
+```bash
+REG=897744507899.dkr.ecr.us-east-1.amazonaws.com
+aws ecr get-login-password | docker login -u AWS --password-stdin $REG
+docker pull --platform linux/arm64 $REG/station-stream:461037e
+docker tag $REG/station-stream:461037e $REG/station-stream-tf:461037e
+docker push $REG/station-stream-tf:461037e
+# image_tag default bumped to 461037e in variables.tf, so a plain apply keeps it
+terraform plan -out=tfplan && terraform apply tfplan
+```
+
+**Check:**
+```bash
+API=$(terraform output -raw api_url)
+curl -s $API/health                                   # {"status":"ok","version":"461037e",...}
+curl -si -X OPTIONS $API/graphql -H 'Origin: https://station-stream-2026.web.app' \
+  -H 'Access-Control-Request-Method: POST' | grep -i access-control-allow-origin
+```
+
+**Result:** `Apply complete! Resources: 2 added, 1 changed, 1 destroyed` in 2m56s, almost all of it CloudFront propagating to edge locations. **API URL: https://d1436kyrcdypmk.cloudfront.net** (distribution `E7BB4SHJWN2O6`), task definition `station-stream-tf:2`, image `461037e`.
+
+- `/health` over HTTPS → `{"status":"ok","version":"461037e",...}`
+- Preflight from `https://station-stream-2026.web.app` → `204`, `access-control-allow-origin` set, methods `GET,POST`
+- Real query → `200` + `access-control-allow-origin`; `x-cache: Miss from cloudfront` every time (caching off, as intended)
+- `http://` → `301` to `https://`
+- The old ALB URL still answers on HTTP (CloudFront was added in front, nothing removed)
+- `terraform plan` afterwards → *No changes*
+
+**Gotcha (again):** `aws ecs wait services-stable` returned in 1.5 s while the rollout said `IN_PROGRESS`. The waiter only compares running vs desired counts, which already matched while the old task drained. Poll `deployments[0].rolloutState` until `COMPLETED` instead:
+```bash
+aws ecs describe-services --cluster station-stream-tf --services api \
+  --query 'services[0].{rollout:deployments[0].rolloutState,deployments:length(deployments),taskDef:taskDefinition}'
 ```
 
 ---
