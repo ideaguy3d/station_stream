@@ -1,0 +1,19 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "OnlyMainBranchOfThisRepo",
+      "Effect": "Allow",
+      "Principal": {
+        "Federated": "arn:aws:iam::897744507899:oidc-provider/token.actions.githubusercontent.com"
+      },
+      "Action": "sts:AssumeRoleWithWebIdentity",
+      "Condition": {
+        "StringEquals": {
+          "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+          "token.actions.githubusercontent.com:sub": "repo:ideaguy3d/station_stream:ref:refs/heads/main"
+        }
+      }
+    }
+  ]
+}

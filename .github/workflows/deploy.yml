@@ -1,0 +1,90 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["docs/**", "**.md"]   # doc-only commits don't redeploy
+  workflow_dispatch:                      # "Run workflow" button for manual deploys
+
+permissions:
+  id-token: write   # lets this job ask GitHub for an OIDC token
+  contents: read
+
+# Never run two deploys at once; queue the newer one instead of cancelling mid-rollout.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPOSITORY: station-stream
+  ECS_CLUSTER: station-stream
+  ECS_SERVICE: api
+  CONTAINER_NAME: api
+  PUBLIC_URL: http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04-arm   # native ARM build, same chip family as Fargate ARM64
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Get short-lived AWS credentials (OIDC, no stored keys)
+        uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: arn:aws:iam::897744507899:role/station-stream-github-deploy
+          role-session-name: gha-${{ github.run_id }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Log in to ECR
+        id: ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - uses: docker/setup-buildx-action@v4
+
+      - name: Build and push image tagged with the commit
+        id: image
+        env:
+          REGISTRY: ${{ steps.ecr.outputs.registry }}
+        run: |
+          TAG="${GITHUB_SHA::7}"
+          IMAGE="$REGISTRY/$ECR_REPOSITORY:$TAG"
+          # Tags are immutable in ECR, so a re-run of the same commit reuses the image.
+          if aws ecr describe-images --repository-name "$ECR_REPOSITORY" --image-ids imageTag="$TAG" >/dev/null 2>&1; then
+            echo "Image $TAG already in ECR, skipping build"
+          else
+            docker buildx build --provenance=false --push -t "$IMAGE" .
+          fi
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+
+      - name: Put the new image and version into the task definition
+        id: taskdef
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: infra/ecs/taskdef.json
+          container-name: ${{ env.CONTAINER_NAME }}
+          image: ${{ steps.image.outputs.image }}
+          environment-variables: APP_VERSION=${{ steps.image.outputs.tag }}
+
+      - name: Deploy to ECS and wait until healthy
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v2
+        with:
+          task-definition: ${{ steps.taskdef.outputs.task-definition }}
+          cluster: ${{ env.ECS_CLUSTER }}
+          service: ${{ env.ECS_SERVICE }}
+          wait-for-service-stability: true
+          wait-for-minutes: 10
+
+      - name: Smoke test the public URL
+        run: |
+          want="${{ steps.image.outputs.tag }}"
+          for i in $(seq 1 12); do
+            got=$(curl -fsS "$PUBLIC_URL/health" | jq -r .version) || got="(no response)"
+            echo "attempt $i: live version $got, want $want"
+            [ "$got" = "$want" ] && exit 0
+            sleep 5
+          done
+          echo "::error::Live version never became $want"
+          exit 1

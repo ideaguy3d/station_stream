@@ -719,6 +719,62 @@ aws ecs describe-services --cluster station-stream --services api --query 'servi
 
 ---
 
+## Phase 8 🔜: GitHub Actions deploys with OIDC (no stored AWS keys)
+
+**What & why:** every push to `main` builds the image, pushes it to ECR, and rolls it out to ECS, with **no AWS keys stored in GitHub**. OIDC (OpenID Connect) works like a signed ID card: GitHub gives the workflow a short-lived token saying "repo `ideaguy3d/station_stream`, branch `main`"; AWS checks the signature and swaps it for ~1-hour credentials.
+
+### 8.1 ✅ GitHub as an identity provider (done in the console)
+
+Done once per AWS account; every repo's role points at it. On its own it grants nothing.
+
+**Console (what was clicked):** IAM → Identity providers → Add provider → **OpenID Connect** (not SAML, the older XML standard used by Okta/AD) → Provider URL `https://token.actions.githubusercontent.com` → Audience `sts.amazonaws.com` (the token is meant for AWS's token service) → tag `project=station-stream` → Add provider. Banner: *"You must assign an IAM role to start using this provider."*
+
+```bash
+# CLI equivalent
+aws iam create-open-id-connect-provider --url https://token.actions.githubusercontent.com \
+  --client-id-list sts.amazonaws.com --tags Key=project,Value=station-stream
+```
+
+**Check:**
+```bash
+aws iam get-open-id-connect-provider \
+  --open-id-connect-provider-arn arn:aws:iam::897744507899:oidc-provider/token.actions.githubusercontent.com
+```
+The console fetched a thumbprint (a fingerprint of GitHub's TLS certificate). For GitHub, AWS now validates against trusted certificate authorities instead, so a rotated cert won't break deploys.
+
+### 8.2 ✅ Deploy role that only `main` of this repo can use (done in the console)
+
+**What & why:** the role the workflow takes on. Two halves:
+- **Trust** ([infra/iam/github-oidc-trust.json](../infra/iam/github-oidc-trust.json)), *who*: tokens from GitHub, meant for AWS (`aud = sts.amazonaws.com`), **and** from `repo:ideaguy3d/station_stream:ref:refs/heads/main` (`sub`). Forks, PRs and other branches are refused. **Forgetting the `sub` check is the classic OIDC mistake: without it, any GitHub repo in the world could use your role.**
+- **Permissions** ([infra/iam/github-deploy-policy.json](../infra/iam/github-deploy-policy.json)), *what*: ECR login; push only to `repository/station-stream`; register task definitions; update only `service/station-stream/api`; `iam:PassRole` only on `station-stream-task-exec` and only to `ecs-tasks.amazonaws.com`. No deletes.
+
+**Console (what was clicked):** IAM → Roles → Create role →
+1. Trusted entity **Web identity** (others: AWS service, AWS account, SAML, Custom trust policy) → Identity provider `token.actions.githubusercontent.com` → Audience `sts.amazonaws.com` → GitHub organization `ideaguy3d` → repository `station_stream` → branch `main`. **Repository and branch are "optional" and default to `*`**, which would let any repo/branch in the org deploy. Always fill them in.
+2. Add permissions → **Create inline policy** → JSON. Pasting didn't work (the browser pane doesn't share the Mac clipboard), so the JSON was typed and then validated by reading the editor's contents (valid, 5 statements). Red herring below the editor: `not authorized to perform access-analyzer:ValidatePolicy`, the live policy linter needs a permission our user lacks; the policy itself is fine.
+3. Name `station-stream-github-deploy`, description, inline policy name `station-stream-github-deploy-policy`, tag `project=station-stream` → Create role.
+
+The wizard's generated trust policy uses `StringLike` and lists the `sub` value twice (harmless). With no `*` in it, `StringLike` behaves as an exact match.
+
+**CLI equivalent:**
+```bash
+aws iam create-role --role-name station-stream-github-deploy \
+  --assume-role-policy-document file://infra/iam/github-oidc-trust.json \
+  --tags Key=project,Value=station-stream
+aws iam put-role-policy --role-name station-stream-github-deploy \
+  --policy-name station-stream-github-deploy-policy \
+  --policy-document file://infra/iam/github-deploy-policy.json
+```
+
+**Check:**
+```bash
+aws iam get-role --role-name station-stream-github-deploy \
+  --query 'Role.[MaxSessionDuration, AssumeRolePolicyDocument.Statement[0].Condition]'   # 3600s = credentials last 1 hour max
+aws iam get-role-policy --role-name station-stream-github-deploy \
+  --policy-name station-stream-github-deploy-policy --query 'PolicyDocument.Statement[].Sid'
+```
+
+---
+
 ## Teardown (reverse order of creation)
 
 Dependencies must go first: the service before the cluster, the load balancer before its security group, the task security group before the ALB group it references.
