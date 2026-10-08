@@ -31,6 +31,7 @@ Status markers: ✅ done · ❌ failed first (the error and the fix are the inte
 | ECR repo | `897744507899.dkr.ecr.us-east-1.amazonaws.com/station-stream` |
 | GitHub deploy role | `arn:aws:iam::897744507899:role/station-stream-github-deploy` (OIDC provider `token.actions.githubusercontent.com`) |
 | Video bucket | `station-stream-video-897744507899` |
+| **App 2 (Terraform)** | http://station-stream-tf-alb-862429135.us-east-1.elb.amazonaws.com · CloudFront `d990usezj0kzv.cloudfront.net` · everything named `station-stream-tf-*` · state in `terraform/terraform.tfstate` |
 | CloudFront distribution | `E285IGXEWUIGEW` → https://d22r43ct06qav3.cloudfront.net (OAC `E10UJH60KSW2B5`) |
 
 ---
@@ -826,6 +827,115 @@ gh run list --repo ideaguy3d/station_stream --limit 3
 gh secret list --repo ideaguy3d/station_stream            # empty: no AWS keys anywhere in GitHub
 curl -s http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com/health   # version = latest commit
 aws ecs describe-services --cluster station-stream --services api --query 'services[0].taskDefinition'
+```
+
+---
+
+## Phase 9 ✅: Terraform builds app 2, a separate copy (`station-stream-tf`)
+
+**What & why:** Terraform reads `.tf` files that describe the *end state* ("there should be a load balancer like this"), compares them with what exists, and creates/changes/deletes the difference. Its **state file** (`terraform/terraform.tfstate`, git-ignored, local) is its memory of which real resources it owns. App 1 is untouched: it isn't in this state, so Terraform can't see or change it.
+
+All code is in [terraform/](../terraform/). Every resource name starts with `station-stream-tf-`, which our IAM limits allow, and `default_tags` stamps `project`, `app` and `managed=terraform` on everything.
+
+### 9.1 Console step → Terraform file
+
+| What you watched in the console | Terraform | File |
+|---|---|---|
+| 5.1 Default VPC, subnets 1a/1b | `data "aws_vpc"`, `data "aws_subnet"` (look up, don't create) | [network.tf](../terraform/network.tf) |
+| 5.2 Two chained security groups | `aws_security_group` ×2, `aws_vpc_security_group_ingress_rule` (task rule uses `referenced_security_group_id`) + **egress rules**, which the console adds silently | network.tf |
+| 4.1–4.2 ECR repo, immutable, scan, keep 10 | `aws_ecr_repository`, `aws_ecr_lifecycle_policy` | [ecr.tf](../terraform/ecr.tf) |
+| 5.3 Task execution role | `data "aws_iam_policy_document"` (trust with confused-deputy conditions), `aws_iam_role`, `aws_iam_role_policy_attachment` | [iam.tf](../terraform/iam.tf) |
+| 5.6–5.8 Load balancer, target group, listener | `aws_lb`, `aws_lb_target_group` (`deregistration_delay = 30`), `aws_lb_listener` | [alb.tf](../terraform/alb.tf) |
+| 5.4, 5.5, 5.9, 5.10 Logs, cluster, task definition, service | `aws_cloudwatch_log_group`, `aws_ecs_cluster`, `aws_ecs_task_definition`, `aws_ecs_service` (circuit breaker, `ignore_changes = [desired_count]` so autoscaling isn't undone) | [ecs.tf](../terraform/ecs.tf) |
+| 6.1–6.2 Private bucket + upload with content types | `aws_s3_bucket`, public access block, ownership controls, **`aws_s3_object` with `for_each` over `fileset()`** (141 files, Content-Type/Cache-Control by extension) | [video.tf](../terraform/video.tf) |
+| 6.3 CloudFront + OAC + bucket policy | `aws_cloudfront_origin_access_control`, `data` lookups of the managed cache/CORS policies by name, `aws_cloudfront_distribution`, `aws_s3_bucket_policy` | video.tf |
+| 6.4 New task definition revision with the CloudFront URL | **Not needed**: `VIDEO_BASE_URL = "https://${aws_cloudfront_distribution.video.domain_name}"` wires it automatically | ecs.tf |
+| 7.1–7.4 SNS, email, 4 alarms, autoscaling | `aws_sns_topic`, `aws_sns_topic_subscription`, **one `aws_cloudwatch_metric_alarm` with `for_each` over a map of 4**, `aws_appautoscaling_target` + `_policy` | [monitoring.tf](../terraform/monitoring.tf) |
+
+Deliberate difference from app 1: CloudFront `price_class = "PriceClass_100"` (what was planned; app 1's console defaulted to All).
+
+### 9.2 Commands, in order
+
+```bash
+cd terraform
+export AWS_PROFILE=station-stream AWS_REGION=us-east-1
+
+terraform init        # download the AWS provider (6.68.0), write .terraform.lock.hcl (commit this)
+terraform fmt         # format the files
+terraform validate    # syntax/type check, no AWS calls
+terraform plan        # → Plan: 172 to add, 0 to change, 0 to destroy   (141 are video files)
+```
+
+**Chicken-and-egg:** the ECS service can't start until its image is in the *new* repo, which Terraform creates. So bootstrap in three steps:
+```bash
+# 1. Create only the repo. -target is for bootstrapping/emergencies only: it skips the full dependency check.
+terraform apply -target=aws_ecr_repository.app -target=aws_ecr_lifecycle_policy.keep_10
+
+# 2. Copy app 1's image (same code, built by GitHub Actions) into it
+REG=897744507899.dkr.ecr.us-east-1.amazonaws.com
+aws ecr get-login-password | docker login -u AWS --password-stdin $REG
+docker pull --platform linux/arm64 $REG/station-stream:0c5fffd
+docker tag $REG/station-stream:0c5fffd $REG/station-stream-tf:0c5fffd
+docker push $REG/station-stream-tf:0c5fffd
+
+# 3. Everything else. Save the plan and apply exactly that file, so nothing changes between review and apply.
+terraform plan -out=tfplan
+terraform apply tfplan
+```
+
+### 9.3 ❌→✅ Autoscaling tag permissions (and why a workaround failed)
+
+**Result of the first full apply:** 170 of 172 created; app 2 healthy at http://station-stream-tf-alb-862429135.us-east-1.elb.amazonaws.com/?station=north, video from its own CloudFront `d990usezj0kzv.cloudfront.net`. The service started last (uptime looked short) because the task definition *references* the CloudFront domain, so Terraform waited ~2m43s for CloudFront first. Terraform derives that order from references: its **dependency graph**.
+
+**❌ Error 1:**
+```
+creating Application AutoScaling Target (service/station-stream-tf/api): AccessDeniedException:
+... not authorized to perform: application-autoscaling:TagResource on resource: ...:scalable-target/*
+```
+**Diagnosis:** `default_tags` makes Terraform tag *every* resource. In the console (app 1) the scalable target got no tags, so this permission was never needed. Our autoscaling rights come from `AmazonECS_FullAccess`, which lacks `TagResource`. Same pattern as SNS in 7.1.
+
+**Workaround tried:** a second provider block with `alias = "untagged"` (no default_tags) used only by that resource. Provider aliases are how one config deploys to two regions or accounts.
+
+**❌ Error 2:** `not authorized to perform: application-autoscaling:ListTagsForResource`. The AWS provider **always reads tags back** after creating a resource, tagged or not, so no tag-free trick can avoid it. The target *was* created and recorded in state; the policy was not.
+
+**Fix (owner, as root):** add to [infra/iam/builder-iam-scoped.json](../infra/iam/builder-iam-scoped.json):
+```json
+{ "Sid": "TagAutoScalingTargets", "Effect": "Allow",
+  "Action": ["application-autoscaling:TagResource","application-autoscaling:UntagResource",
+             "application-autoscaling:ListTagsForResource"],
+  "Resource": "arn:aws:application-autoscaling:us-east-1:897744507899:scalable-target/*" }
+```
+IAM → User groups → station-stream-builders → Permissions → `station-stream-iam-scoped` → Edit → JSON → paste → Next → Save. Then remove the alias and `terraform apply` again.
+
+**Lesson:** Terraform touches more APIs than the console does for the "same" thing (tagging, reading tags back, explicit egress rules). Least-privilege policies written by watching console clicks will have gaps; the error message names the exact action to add.
+
+### 9.4 ✅ Finish and verify
+
+```bash
+terraform plan -out=tfplan   # → aws_appautoscaling_target.api is tainted, so must be replaced; Plan: 2 to add, 1 to destroy
+terraform apply tfplan
+```
+**Tainted:** the target was created in AWS but a later step (reading its tags) failed, so Terraform no longer trusts it and replaces it on the next apply. That's how a half-finished apply heals itself.
+
+**Drift check, the proof that code = reality:**
+```bash
+terraform plan -detailed-exitcode   # exit 0 = "No changes"; 2 = something differs; 1 = error
+```
+
+| Check | Result |
+|---|---|
+| Drift check | exit **0**, No changes |
+| App 2 `/health` | `ok`, version `0c5fffd`, 1 healthy target |
+| Video | plays from `d990usezj0kzv.cloudfront.net` |
+| Alarms | 4 × OK; email subscription confirmed (Terraform can create it, not click the link) |
+| Autoscaling tags | `project`, `app`, `managed=terraform` |
+| App 1 | untouched, still healthy |
+
+**Not yet allowed:** `tag:GetResources` (the "list everything by tag" search). Teardown checks will need it or another method.
+
+**Destroying app 2 later** is one command (bucket and repo have `force_destroy`/`force_delete` so they empty themselves):
+```bash
+cd terraform && terraform destroy
 ```
 
 ---

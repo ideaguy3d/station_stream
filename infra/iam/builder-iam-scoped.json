@@ -61,6 +61,16 @@
         "sns:Unsubscribe"
       ],
       "Resource": "arn:aws:sns:us-east-1:897744507899:station-stream-*"
+    },
+    {
+      "Sid": "TagAutoScalingTargets",
+      "Effect": "Allow",
+      "Action": [
+        "application-autoscaling:TagResource",
+        "application-autoscaling:UntagResource",
+        "application-autoscaling:ListTagsForResource"
+      ],
+      "Resource": "arn:aws:application-autoscaling:us-east-1:897744507899:scalable-target/*"
     }
   ]
 }
