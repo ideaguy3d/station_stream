@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Station Stream | RankLab TV</title>
+<style>
+  :root { --bg:#0b0f1a; --panel:#131a2b; --accent:#6c8cff; --text:#e8ecf8; --muted:#8a94b2; }
+  * { box-sizing:border-box; margin:0; padding:0; }
+  html, body { height:100%; }
+  body { background:radial-gradient(1200px 600px at 20% -10%, #1a2342, var(--bg)); color:var(--text);
+         font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; justify-content:space-between; padding:14px 24px;
+           border-bottom:1px solid #1f2842; background:rgba(19,26,43,.7); backdrop-filter:blur(8px); }
+  .brand { font-weight:700; letter-spacing:.5px; }
+  .brand span { color:var(--accent); }
+  .actions a, .actions button { color:var(--text); background:#1c2540; border:1px solid #2a3556; padding:8px 14px;
+           border-radius:8px; font-size:14px; text-decoration:none; cursor:pointer; margin-left:8px; }
+  .actions a:hover, .actions button:hover { border-color:var(--accent); }
+  main { flex:1; padding:20px; display:flex; }
+  .frame { position:relative; flex:1; border-radius:14px; overflow:hidden; background:var(--panel);
+           border:1px solid #1f2842; box-shadow:0 20px 60px rgba(0,0,0,.5); }
+  iframe { width:100%; height:100%; border:0; display:block; }
+  .loading { position:absolute; inset:0; display:grid; place-items:center; color:var(--muted); pointer-events:none; }
+  iframe.loaded + .loading { display:none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">Rank<span>Lab</span> TV</div>
+  <div class="actions">
+    <button onclick="document.getElementById('app').src = document.getElementById('app').src">Reload</button>
+    <button onclick="document.getElementById('app').requestFullscreen()">Fullscreen</button>
+    <a href="http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com" target="_blank" rel="noopener">Open in tab</a>
+  </div>
+</header>
+<main>
+  <div class="frame">
+    <iframe id="app"
+      src="https://station-stream-2026.web.app"
+      allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+      allowfullscreen
+      onload="this.classList.add('loaded')"></iframe>
+    <div class="loading">Loading stream...</div>
+  </div>
+</main>
+</body>
+</html>
