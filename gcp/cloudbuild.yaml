@@ -1,0 +1,63 @@
+# GCP side of Station Stream: deploy the likes function and the web UI on every push to main
+# that touches gcp/, public/ or scripts/build-hosting.sh (filter lives on the trigger).
+# Runs as the cloudbuild-deployer service account (set on the trigger), never a person.
+# Each step is a container; /workspace (the repo checkout) is shared between steps.
+
+steps:
+  # 1. Install the root deps (Tailwind) and build gcp/hosting-dist: page + CSS + config.js.
+  - id: build-web
+    name: node:22
+    entrypoint: bash
+    args: ['-c', 'npm ci && npm run build:hosting']
+
+  # 2. Deploy the function. Same flags as the manual deploy, minus --allow-unauthenticated:
+  #    the build account can't change who may invoke it (no setIamPolicy), and it doesn't need to.
+  - id: deploy-function
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: gcloud
+    args:
+      - functions
+      - deploy
+      - likes
+      - --gen2
+      - --region=us-central1
+      - --runtime=nodejs22
+      - --source=gcp/functions/likes
+      - --entry-point=likes
+      - --trigger-http
+      - --service-account=likes-fn@$PROJECT_ID.iam.gserviceaccount.com
+      - --set-secrets=MONGODB_URI=atlas-uri:latest
+      - --set-env-vars=^;^PROJECT_ID=$PROJECT_ID;CORS_ORIGINS=https://station-stream-2026.web.app,https://station-stream-2026.firebaseapp.com
+      - --max-instances=2
+      - --memory=256Mi
+      - --update-labels=project=station-stream,deployed-by=cloud-build
+      - --quiet
+
+  # 3. Deploy Hosting. firebase-tools picks up the build account's credentials from the
+  #    metadata server (Application Default Credentials): no `firebase login`, no token.
+  - id: deploy-hosting
+    name: node:22
+    dir: gcp
+    entrypoint: npx
+    args: ['--yes', 'firebase-tools@15.33.0', 'deploy', '--only', 'hosting', '--project', '$PROJECT_ID', '--non-interactive',
+           '--message', 'Cloud Build $BUILD_ID @ $SHORT_SHA']
+
+  # 4. Smoke test: the live site serves this build's config, and the function answers (401 without a token).
+  #    $$ = a literal $ for bash; a single $ is a Cloud Build substitution like $PROJECT_ID.
+  - id: smoke-test
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk:slim
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        curl -fsS https://station-stream-2026.web.app/config.js | grep -q likesUrl
+        code=$$(curl -s -o /dev/null -w '%{http_code}' https://us-central1-station-stream-2026.cloudfunctions.net/likes)
+        echo "likes without token -> $$code"; test "$$code" = 401
+        echo "smoke test passed"
+
+options:
+  # Required when a build runs as a user-specified service account (no default logs bucket).
+  logging: CLOUD_LOGGING_ONLY
+
+timeout: 900s
