@@ -29,6 +29,7 @@ Status markers: ✅ done · ❌ failed first (the error and the fix are the inte
 | Load balancer | `arn:aws:elasticloadbalancing:us-east-1:897744507899:loadbalancer/app/station-stream-alb/09b5d527936ae1a4` |
 | Public URL | http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com |
 | ECR repo | `897744507899.dkr.ecr.us-east-1.amazonaws.com/station-stream` |
+| GitHub deploy role | `arn:aws:iam::897744507899:role/station-stream-github-deploy` (OIDC provider `token.actions.githubusercontent.com`) |
 | Video bucket | `station-stream-video-897744507899` |
 | CloudFront distribution | `E285IGXEWUIGEW` → https://d22r43ct06qav3.cloudfront.net (OAC `E10UJH60KSW2B5`) |
 
@@ -719,7 +720,7 @@ aws ecs describe-services --cluster station-stream --services api --query 'servi
 
 ---
 
-## Phase 8 🔜: GitHub Actions deploys with OIDC (no stored AWS keys)
+## Phase 8 ✅: GitHub Actions deploys with OIDC (no stored AWS keys)
 
 **What & why:** every push to `main` builds the image, pushes it to ECR, and rolls it out to ECS, with **no AWS keys stored in GitHub**. OIDC (OpenID Connect) works like a signed ID card: GitHub gives the workflow a short-lived token saying "repo `ideaguy3d/station_stream`, branch `main`"; AWS checks the signature and swaps it for ~1-hour credentials.
 
@@ -771,6 +772,58 @@ aws iam get-role --role-name station-stream-github-deploy \
   --query 'Role.[MaxSessionDuration, AssumeRolePolicyDocument.Statement[0].Condition]'   # 3600s = credentials last 1 hour max
 aws iam get-role-policy --role-name station-stream-github-deploy \
   --policy-name station-stream-github-deploy-policy --query 'PolicyDocument.Statement[].Sid'
+```
+
+### 8.3 ❌→✅ The workflow, and the `sub` claim that didn't match
+
+**What & why:** [.github/workflows/deploy.yml](../.github/workflows/deploy.yml) runs on every push to `main` (doc-only changes skipped):
+
+| Step | What it does |
+|---|---|
+| `permissions: id-token: write` | Lets the job request an OIDC token from GitHub |
+| `concurrency: deploy-production` | Never two deploys at once; a newer one queues instead of killing a rollout mid-way |
+| `runs-on: ubuntu-24.04-arm` | Native ARM build (free for public repos), same chip family as Fargate ARM64, no emulation |
+| configure-aws-credentials@v6 | Swaps the OIDC token for ~1-hour credentials via `role-to-assume`; session name `gha-<run id>` shows up in CloudTrail |
+| amazon-ecr-login@v2 | Docker login to ECR |
+| Build and push | Tag = first 7 chars of the commit. **Skips the build if the tag already exists**: tags are immutable, so a re-run would otherwise fail on push |
+| render-task-definition@v1 | Writes the new image and `APP_VERSION` into `infra/ecs/taskdef.json` |
+| deploy-task-definition@v2 | Registers a new revision, updates the service, **waits for stability** (fails the job if the rollout fails) |
+| Smoke test | Polls `/health` until the live `version` equals the commit, so "green" means *users* have the new code |
+
+Actions are pinned to major versions (`@v6`). For stronger supply-chain security you'd pin each to a full commit SHA.
+
+**❌ First run failed at the credentials step:**
+```
+Could not assume role with OIDC: Not authorized to perform sts:AssumeRoleWithWebIdentity
+```
+**Diagnosis:** this means a trust-policy condition didn't match, usually `sub`. Compare what GitHub *sends* with what AWS *expects*:
+```bash
+gh api repos/ideaguy3d/station_stream/actions/oidc/customization/sub
+# {"use_default":true,"use_immutable_subject":true,
+#  "sub_claim_prefix":"repo:ideaguy3d@14084686/station_stream@1409232207"}
+```
+| | `sub` |
+|---|---|
+| Trust policy expected (what the console wizard builds) | `repo:ideaguy3d/station_stream:ref:refs/heads/main` |
+| GitHub actually sent | `repo:ideaguy3d@14084686/station_stream@1409232207:ref:refs/heads/main` |
+
+The repo uses GitHub's **immutable subject** format, which adds the numeric owner and repo IDs. Why it exists: with name-only subjects, if this repo were deleted or renamed, someone could create a new repo with the **same name** and inherit the AWS trust. IDs are never reused.
+
+**✅ Fix (console):** IAM → Roles → station-stream-github-deploy → **Trust relationships** → Edit trust policy → replace with [infra/iam/github-oidc-trust.json](../infra/iam/github-oidc-trust.json) (immutable `sub`, `StringEquals`) → Update policy. Then `gh run rerun 37726329961` (same commit, so it tests only the fix).
+```bash
+# CLI equivalent
+aws iam update-assume-role-policy --role-name station-stream-github-deploy \
+  --policy-document file://infra/iam/github-oidc-trust.json
+```
+
+**Result:** all 8 steps green in 3m26s. Live `/health` → `"version":"be5ccf1"`; service on `station-stream:3`; image `be5ccf1` scanned clean; smoke test passed on attempt 1; **0 secrets stored in GitHub**.
+
+**Check:**
+```bash
+gh run list --repo ideaguy3d/station_stream --limit 3
+gh secret list --repo ideaguy3d/station_stream            # empty: no AWS keys anywhere in GitHub
+curl -s http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com/health   # version = latest commit
+aws ecs describe-services --cluster station-stream --services api --query 'services[0].taskDefinition'
 ```
 
 ---
