@@ -29,6 +29,8 @@ Status markers: ✅ done · ❌ failed first (the error and the fix are the inte
 | Load balancer | `arn:aws:elasticloadbalancing:us-east-1:897744507899:loadbalancer/app/station-stream-alb/09b5d527936ae1a4` |
 | Public URL | http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com |
 | ECR repo | `897744507899.dkr.ecr.us-east-1.amazonaws.com/station-stream` |
+| Video bucket | `station-stream-video-897744507899` |
+| CloudFront distribution | `E285IGXEWUIGEW` → https://d22r43ct06qav3.cloudfront.net (OAC `E10UJH60KSW2B5`) |
 
 ---
 
@@ -368,66 +370,144 @@ curl http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com/health
 
 ---
 
-## Phase 6 🔜: S3 + CloudFront for video
+## Phase 6 ✅: S3 + CloudFront for video
 
 **Why:** the public page's video links still point to `http://localhost:8080`, which browsers block (`ERR_BLOCKED_BY_CLIENT`). Video moves to S3, served through CloudFront.
 
-### 6.1 🔜 Private S3 bucket
+### 6.1 ✅ Private S3 bucket (done in the console)
 
 **What & why:** S3 (Simple Storage Service) holds the HLS files. **Block Public Access** stays on: nobody reads the bucket directly, only CloudFront.
 
+**Console (what was clicked):** S3 → Create bucket →
+- Bucket type **General purpose**; namespace **Global** (the newer "Account Regional" namespace stops other accounts from claiming your names; kept Global so the name matches this plan)
+- Name `station-stream-video-897744507899` (bucket names are shared worldwide, so the account number makes it unique)
+- Object Ownership **ACLs disabled** (access decided only by policies, AWS's recommendation)
+- **Block all public access: on** (all 4 sub-settings)
+- Versioning **off** (old copies of re-encodable video would only cost money)
+- Encryption **SSE-S3**, not SSE-KMS: with KMS, CloudFront would also need permission on the key, a common OAC mistake
+- Tag `project=station-stream`
+
+**CLI equivalent:**
 ```bash
-BUCKET=station-stream-video-897744507899      # bucket names are global, so add the account number
+BUCKET=station-stream-video-897744507899
 aws s3api create-bucket --bucket $BUCKET       # us-east-1 needs no LocationConstraint
 aws s3api put-public-access-block --bucket $BUCKET --public-access-block-configuration \
   BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+aws s3api put-bucket-tagging --bucket $BUCKET --tagging 'TagSet=[{Key=project,Value=station-stream}]'
 ```
 
-**Console:** S3 → Create bucket → keep **Block all public access** checked.
+**Check:**
+```bash
+aws s3api get-public-access-block --bucket $BUCKET          # all four true
+aws s3api get-bucket-ownership-controls --bucket $BUCKET    # BucketOwnerEnforced
+aws s3api get-bucket-encryption --bucket $BUCKET            # AES256 (= SSE-S3)
+```
 
-### 6.2 🔜 Upload video with correct content types
+### 6.2 ✅ Upload video with correct content types (CLI: bulk work, 141 files / 120 MB)
+
+**What & why:** every S3 object carries a `Content-Type` header that tells the browser what it is. `.ts` is a classic trap: tools guess **TypeScript**, not video, and some players refuse it. So each file type is uploaded separately with its type set explicitly. `Cache-Control` tells CloudFront and browsers how long to keep a copy: segments never change once made (1 year), playlists might (5 minutes).
 
 ```bash
-# sync uploads only what changed. Playlists change rarely; segments never do once made.
-aws s3 sync video/out s3://$BUCKET/ --exclude "*.m3u8" --cache-control "public,max-age=31536000,immutable"
-aws s3 sync video/out s3://$BUCKET/ --exclude "*" --include "*.m3u8" \
+# sync uploads only new or changed files, so re-running is cheap
+aws s3 sync video/out s3://$BUCKET --exclude "*" --include "*.ts" \
+  --content-type video/mp2t --cache-control "public,max-age=31536000,immutable"
+aws s3 sync video/out s3://$BUCKET --exclude "*" --include "*.m3u8" \
   --content-type application/vnd.apple.mpegurl --cache-control "public,max-age=300"
+aws s3 sync video/out s3://$BUCKET --exclude "*" --include "*.jpg" \
+  --content-type image/jpeg --cache-control "public,max-age=86400"
 ```
 
-### 6.3 🔜 CloudFront with Origin Access Control
+**Console:** bucket → Upload → Add folder. Content type and Cache-Control are under **Properties → Metadata**, and you'd have to set them per batch, which is why bulk uploads belong in the CLI.
 
-**What & why:** CloudFront is AWS's CDN: copies of the video sit in data centers near viewers. **Origin Access Control (OAC)** lets CloudFront sign its requests to S3, and a bucket policy allows *only that distribution* to read.
+**Check:**
+```bash
+aws s3 ls s3://$BUCKET --recursive --summarize | tail -2              # 141 objects, ~120 MB
+aws s3api head-object --bucket $BUCKET --key ship-it/1080p/seg_000.ts \
+  --query '[ContentType,CacheControl]'                                 # video/mp2t, max-age=31536000
+```
 
+### 6.3 ✅ CloudFront with Origin Access Control (done in the console)
+
+**What & why:** CloudFront is AWS's CDN: copies of the video sit in data centers near viewers. **Origin Access Control (OAC)** makes CloudFront sign every request to S3, and the bucket policy accepts *only this distribution's* signed requests.
+
+Result: distribution `E285IGXEWUIGEW` → **https://d22r43ct06qav3.cloudfront.net**, OAC `E10UJH60KSW2B5`.
+
+**Console (what was clicked):** CloudFront → Create distribution (the newer 4-step wizard):
+1. **Get started:** name `station-stream-video`; type **Single website** (the "Multiple website configuration" option is AWS's built-in multi-brand/SaaS mode, essentially Local Public's 20-stations-one-platform model); no custom domain (use the free `*.cloudfront.net` with HTTPS).
+2. **Specify origin:** type **Amazon S3** → Browse S3 → the bucket. **"Allow private S3 bucket access to CloudFront"** ticked: this creates the OAC *and* writes the bucket policy, replacing the old copy-paste step. Origin settings: recommended. Cache settings: **Customize**:
+   - Viewer protocol **Redirect HTTP to HTTPS**
+   - Allowed methods **GET, HEAD, OPTIONS** (OPTIONS = the browser's CORS "preflight" permission check)
+   - Cache policy **CachingOptimized** (cache key = URL only; respects each object's Cache-Control)
+   - Response headers policy **CORS-With-Preflight**: adds `Access-Control-Allow-Origin` so hls.js on the ALB's domain may read the files. Without it the browser blocks the video as cross-origin.
+3. **Enable security:** **Do not enable** WAF (Web Application Firewall, ~$14/month). Public video in a private bucket has no forms or logins to attack; in production with sign-in you'd turn it on.
+4. **Review:** Billing **Pay-as-you-go ($0/month)**, Origin Shield **off** (an extra paid cache layer for huge audiences).
+
+Then Tags tab → Manage tags → add `project=station-stream` (the wizard only adds `Name`).
+
+Price class defaulted to **All edge locations** (`PriceClass_All`). `PriceClass_100` (North America + Europe only) is cheaper at scale; at our traffic the free tier covers either.
+
+**The bucket policy CloudFront wrote:**
+```json
+{
+  "Effect": "Allow",
+  "Principal": { "Service": "cloudfront.amazonaws.com" },
+  "Action": "s3:GetObject",
+  "Resource": "arn:aws:s3:::station-stream-video-897744507899/*",
+  "Condition": { "ArnLike": { "AWS:SourceArn": "arn:aws:cloudfront::897744507899:distribution/E285IGXEWUIGEW" } }
+}
+```
+Only `GetObject`, no `ListBucket`: a **missing file returns 403, not 404**, so outsiders can't probe which files exist. Remember that when debugging a broken link.
+
+**CLI equivalent:**
 ```bash
 aws cloudfront create-origin-access-control --origin-access-control-config \
   Name=station-stream-oac,SigningProtocol=sigv4,SigningBehavior=always,OriginAccessControlOriginType=s3
-
-aws cloudfront create-distribution --distribution-config file://infra/cloudfront/distribution.json
-#  - origin: the bucket, using the OAC above
-#  - viewer protocol: redirect-to-https
-#  - cache policy: Managed-CachingOptimized
-#  - response headers policy: Managed-CORS-With-Preflight (lets the page on the ALB domain fetch video)
-#  - PriceClass_100: only North America/Europe edge locations (cheapest)
-
-# Bucket policy: only this distribution may read objects
-aws s3api put-bucket-policy --bucket $BUCKET --policy file://infra/s3/bucket-policy.json
-#  Principal: cloudfront.amazonaws.com; Condition: AWS:SourceArn = the distribution's ARN
+aws cloudfront create-distribution-with-tags --distribution-config-with-tags file://distribution.json
+#   origin = bucket + the OAC id; ViewerProtocolPolicy=redirect-to-https;
+#   CachePolicyId = Managed-CachingOptimized (658327ea-f89d-4fab-a63d-7e88639e58f6);
+#   ResponseHeadersPolicyId = Managed-CORS-With-Preflight (5cc3b908-e619-4b99-88e5-2cf7f45965bd)
+aws s3api put-bucket-policy --bucket $BUCKET --policy file://bucket-policy.json   # the JSON above
 ```
 
-**Console:** CloudFront → Create distribution → Origin domain: the bucket → Origin access: **Origin access control settings** → Create new OAC. CloudFront then offers to **copy the bucket policy** for you to paste into S3 → bucket → Permissions.
-
-**Check:** `curl -I https://<id>.cloudfront.net/ship-it/master.m3u8` returns **200**, while the same file straight from S3 (`https://$BUCKET.s3.amazonaws.com/ship-it/master.m3u8`) returns **403 AccessDenied**. That proves the bucket is private and only CloudFront can read it.
-
-### 6.4 🔜 Rolling deploy with the new video URL
-
+**Check:**
 ```bash
-# taskdef.json: VIDEO_BASE_URL = https://<id>.cloudfront.net, then register revision 2
-aws ecs register-task-definition --cli-input-json file://infra/ecs/taskdef.json
-aws ecs update-service --cluster station-stream --service api --task-definition station-stream:2
-# Watch: a new task starts → becomes healthy → old task drains (30s) → stops. No downtime.
+aws s3api get-bucket-policy --bucket $BUCKET --query Policy --output text | python3 -m json.tool
+aws cloudfront get-distribution --id E285IGXEWUIGEW --query 'Distribution.Status'    # InProgress → Deployed
+curl -I https://d22r43ct06qav3.cloudfront.net/ship-it/master.m3u8                     # 200 via CloudFront
+curl -I https://station-stream-video-897744507899.s3.amazonaws.com/ship-it/master.m3u8 # 403 straight from S3
 ```
 
-**Console:** ECS → service api → **Deployments** tab shows old and new running side by side.
+### 6.4 ✅ Rolling deploy with the new video URL (done in the console)
+
+**What & why:** the API reads `VIDEO_BASE_URL` from the task definition. Task definitions can't be edited, only given a new **revision**; pointing the service at it triggers a **rolling deploy**. Same image (`57b8b14`): this is a *config* change, not a code change.
+
+**Console (what was clicked):**
+1. ECS → Task definitions → station-stream → revision 1 → **Create new revision** → Environment variables → `VIDEO_BASE_URL` = `https://d22r43ct06qav3.cloudfront.net` → Create → **`station-stream:2`**. (Value type "Value" = plain text; "ValueFrom" would pull a secret from Secrets Manager/Parameter Store.)
+2. ECS → Clusters → station-stream → Services → api → **Update service** → Task definition revision: type `2`, pick **"2 (Latest)"** from the dropdown (typing alone doesn't select it) → Update.
+
+**CLI equivalent:**
+```bash
+aws ecs register-task-definition --cli-input-json file://infra/ecs/taskdef.json   # → revision 2
+aws ecs update-service --cluster station-stream --service api --task-definition station-stream:2
+```
+
+**What the rollout looked like** (polled every ~12s):
+```
+17:26:46  new task 172.31.89.204 registers → healthy; old 172.31.90.9 still healthy (both serving)
+17:26:58–17:27:34  API answers alternate localhost ↔ cloudfront   ← version skew: the ALB round-robins old and new
+17:27:44  old task deregistered → draining (30s deregistration delay)
+17:28:36  "deployment completed" / "has reached a steady state"   ~2.5 min total, zero downtime
+```
+**Version skew** is normal in rolling deploys: for ~50s users could hit either version, which is why a new API version must stay backward-compatible with clients of the old one.
+
+**Check:**
+```bash
+aws ecs describe-services --cluster station-stream --services api \
+  --query 'services[0].deployments[].[taskDefinition,rolloutState,runningCount]'   # one entry: :2 COMPLETED 1
+curl -s http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com/graphql \
+  -H 'content-type: application/json' -d '{"query":"{ show(slug:\"code-lab\"){ imageUrl } }"}'   # cloudfront URL
+```
+Player status line on the public URL: **"720p @ 3306 kbps · 2 renditions · auto · from d22r43ct06qav3.cloudfront.net"**.
 
 ---
 
@@ -489,7 +569,11 @@ aws iam detach-role-policy --role-name station-stream-task-exec \
   --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
 aws iam delete-role --role-name station-stream-task-exec
 aws ecr delete-repository --repository-name station-stream --force
-# Phase 6+: disable then delete the CloudFront distribution, empty and delete the bucket
+# Phase 6: CloudFront must be DISABLED and finish deploying (~5 min) before it can be deleted
+aws cloudfront get-distribution-config --id E285IGXEWUIGEW   # note the ETag, set Enabled=false, update-distribution --if-match ETAG
+aws cloudfront delete-distribution --id E285IGXEWUIGEW --if-match <new ETag>
+aws cloudfront delete-origin-access-control --id E10UJH60KSW2B5 --if-match <ETag>
+aws s3 rm s3://station-stream-video-897744507899 --recursive && aws s3api delete-bucket --bucket station-stream-video-897744507899
 ```
 
 **Check nothing is left:** `aws resourcegroupstaggingapi get-resources --tag-filters Key=project,Values=station-stream`

@@ -14,7 +14,7 @@
       "portMappings": [{ "containerPort": 4000, "protocol": "tcp" }],
       "environment": [
         { "name": "APP_VERSION", "value": "57b8b14" },
-        { "name": "VIDEO_BASE_URL", "value": "http://localhost:8080" }
+        { "name": "VIDEO_BASE_URL", "value": "https://d22r43ct06qav3.cloudfront.net" }
       ],
       "stopTimeout": 30,
       "logConfiguration": {
