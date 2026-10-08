@@ -511,7 +511,7 @@ Player status line on the public URL: **"720p @ 3306 kbps · 2 renditions · aut
 
 ---
 
-## Phase 7 🔜: Monitoring, alarms, autoscaling, self-healing
+## Phase 7 ✅: Monitoring, alarms, autoscaling, self-healing
 
 ### 7.1 ❌→✅ SNS topic for alerts
 
@@ -666,12 +666,56 @@ aws cloudwatch describe-alarms --alarm-name-prefix TargetTracking \
 
 Asymmetric on purpose: too little capacity hurts users, an extra task for a few minutes costs pennies. The 54% (not 60%) low threshold stops the count bouncing between 1 and 2. Don't edit or delete these alarms by hand; the policy owns them.
 
-### 7.5 🔜 Chaos test: stop the task on purpose
+### 7.5 ✅ Chaos test: stop the only task on purpose
+
+**Setup:** confirm the email subscription (its ARN changes from `PendingConfirmation` to a real ID), then send one request per second to the public URL and log the HTTP code:
+```bash
+while true; do echo "$(date +%T) $(curl -s -o /dev/null -m 3 -w '%{http_code}' http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com/health)"; sleep 1; done
+```
+
+**Console (what was clicked):** ECS → station-stream → api → **Tasks** tab → tick the task → **Stop** ▾ → **Stop selected** → dialog warns *"tasks started by a service should be stopped by updating the service"* (i.e. the service will just replace it) → Stop. Task **Health status** showed "Unknown": ECS ignores the Dockerfile `HEALTHCHECK` unless the task definition repeats it; health here comes from the load balancer.
 
 ```bash
+# CLI equivalent
 aws ecs stop-task --cluster station-stream --task <task-arn> --reason "chaos test"
 ```
-**Console:** ECS → station-stream → api → **Tasks** tab → tick the task → **Stop** → Stop selected.
+
+**Prediction:** all 4 alarms fire. **Result: only `elb-5xx` fired.**
+
+**Timeline:**
+```
+20:47:35  ECS deregisters the old task (draining) and, 1 second later, starts a replacement
+20:47:37  first 503 seen by viewers
+20:48:04  new task registered in the target group
+20:48:06  last 503: viewer-facing outage ≈ 30 seconds, 24 failed requests
+20:48:13  service "has reached a steady state"
+20:50:17  elb-5xx  OK → ALARM   (≈2.5 min after the first error: metric publishing delay)
+20:57:17  elb-5xx  ALARM → OK   (≈9 min after the last error: CloudWatch looks back over several datapoints)
+```
+
+**Why each alarm did (or didn't) fire, from the raw metrics:**
+```bash
+aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name HealthyHostCount \
+  --dimensions Name=TargetGroup,Value=$TG Name=LoadBalancer,Value=$LB \
+  --start-time <t-12m> --end-time <now> --period 60 --statistics Minimum
+```
+| Alarm | Fired? | Why |
+|---|---|---|
+| `elb-5xx` | ✅ yes | HTTPCode_ELB_5XX_Count = **18 + 6 = 24**, exactly the 24 503s in the curl log. The load balancer answered 503 itself: nobody to send to. |
+| `target-5xx` | no | The app never returned an error; it simply wasn't there. Target 5xx = no data. |
+| `unhealthy-targets` | no | ECS *deregistered* the task (draining) before stopping it; it never failed a health check. UnHealthyHostCount stayed 0. |
+| `no-healthy-targets` | no | The 20:47 datapoint is **missing entirely**: the ALB publishes nothing while no targets are registered. "Treat missing as breaching" only applies when **every** datapoint in CloudWatch's look-back range is missing; the 20:46 and 20:48 values (1.0) were present, so a 30-second gap was skipped. A multi-minute outage would leave all of them missing and fire it. |
+
+**Lesson:** the viewer-facing signal (`elb-5xx`) caught a 30-second blip that the capacity signals missed. Alert on what users experience, and use capacity alarms for longer outages. Also: alarms lag. Detection took ~2.5 min, longer than the outage itself.
+
+**What would remove the blip:** with 2 tasks (or `minimumHealthyPercent` covering manual stops via a second task) the load balancer always has someone to send to. One task is a single point of failure; we accept that to save money.
+
+**Check:**
+```bash
+aws cloudwatch describe-alarm-history --alarm-name station-stream-elb-5xx --history-item-type StateUpdate \
+  --query 'AlarmHistoryItems[].[Timestamp,HistorySummary]' --output text
+aws ecs describe-services --cluster station-stream --services api --query 'services[0].events[0:6].[createdAt,message]' --output text
+```
 
 ---
 
