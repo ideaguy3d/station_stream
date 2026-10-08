@@ -1,0 +1,30 @@
+{
+  "family": "station-stream",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "runtimePlatform": { "cpuArchitecture": "ARM64", "operatingSystemFamily": "LINUX" },
+  "executionRoleArn": "arn:aws:iam::897744507899:role/station-stream-task-exec",
+  "containerDefinitions": [
+    {
+      "name": "api",
+      "image": "897744507899.dkr.ecr.us-east-1.amazonaws.com/station-stream:57b8b14",
+      "essential": true,
+      "portMappings": [{ "containerPort": 4000, "protocol": "tcp" }],
+      "environment": [
+        { "name": "APP_VERSION", "value": "57b8b14" },
+        { "name": "VIDEO_BASE_URL", "value": "http://localhost:8080" }
+      ],
+      "stopTimeout": 30,
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/station-stream",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "api"
+        }
+      }
+    }
+  ]
+}
