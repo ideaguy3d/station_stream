@@ -432,3 +432,109 @@ unlike {"episodeId":"ep-test-cloud","liked":false}  200  0.22 s
 **In the browser:** like "Training the Machines" (♡ → ♥), **reload** → still ♥, the others ♡. Proves the chain: anonymous uid restored from IndexedDB → fresh ID token → function verifies it → MongoDB lookup by uid. The document is visible in Atlas → Data Explorer → `station_stream.likes` (`uid`, `episodeId`, `likedAt`).
 
 **G3 done.** Next: G4, Cloud Build trigger on push to `main` that builds and deploys Hosting + the function as a least-privilege build service account.
+
+---
+
+## G4: Cloud Build deploys the GCP side on push to `main`
+
+GCP's version of the GitHub Actions pipeline on the AWS side (Phase 8): a push to `main` touching `gcp/**`, `public/**` or `scripts/build-hosting.sh` builds the web UI, deploys the function, deploys Hosting and smoke-tests, all as a service account, never a person.
+
+### G4.1 ✅ Pipeline service account `cloudbuild-deployer` (start minimal)
+
+| Role | Why |
+|---|---|
+| `roles/cloudfunctions.developer` | deploy/update functions; **can't** change who may invoke them (no `setIamPolicy`), so the pipeline doesn't pass `--allow-unauthenticated` (the existing `allUsers` invoker binding survives redeploys) |
+| `roles/iam.serviceAccountUser` **on `likes-fn` only** | "actAs": deploy a function that *runs as* `likes-fn`. Without this check, anyone who can deploy could run code as any identity |
+| `roles/firebasehosting.admin` | upload + release Hosting versions (turned out to be enough for `firebase deploy`) |
+| `roles/logging.logWriter` | write its own build logs |
+
+```bash
+P=station-stream-2026; SA=cloudbuild-deployer@$P.iam.gserviceaccount.com
+gcloud iam service-accounts create cloudbuild-deployer --display-name="Cloud Build: deploys Hosting + likes function"
+for r in roles/cloudfunctions.developer roles/firebasehosting.admin roles/logging.logWriter; do
+  gcloud projects add-iam-policy-binding $P --member=serviceAccount:$SA --role=$r --condition=None
+done
+gcloud iam service-accounts add-iam-policy-binding likes-fn@$P.iam.gserviceaccount.com \
+  --member=serviceAccount:$SA --role=roles/iam.serviceAccountUser
+```
+
+### G4.2 ✅ Connect GitHub (2nd-gen repositories)
+
+**What & why:** two layers. A **host connection** to GitHub (backed by the "Google Cloud Build" GitHub App; its OAuth token is stored in this project's Secret Manager), then **linked repositories** under it. Google recommends authorizing with a **bot GitHub account**, not a person: anyone with enough Secret Manager access could act as that GitHub user, and it breaks when the person leaves.
+
+**Console (owner's OAuth click):** Cloud Build → Repositories → 2nd gen → Create host connection → GitHub, region `us-central1`, name `github` → Connect → authorize **Google Cloud Build** on GitHub → install the app on **only `ideaguy3d/station_stream`**.
+
+```bash
+gcloud builds connections list --region=us-central1     # github  COMPLETE  ideaguy3d
+gcloud builds repositories create station_stream --connection=github --region=us-central1 \
+  --remote-uri=https://github.com/ideaguy3d/station_stream.git
+```
+
+### G4.3 ✅ The pipeline ([gcp/cloudbuild.yaml](../gcp/cloudbuild.yaml))
+
+Each step is a container; `/workspace` (the checkout) is shared between steps.
+
+1. `build-web` (`node:22`): `npm ci && npm run build:hosting`
+2. `deploy-function` (`cloud-sdk:slim`): the same `gcloud functions deploy` as G3.6, minus `--allow-unauthenticated`, plus `--build-service-account` (G4.5) and label `deployed-by=cloud-build`
+3. `deploy-hosting` (`node:22`, `dir: gcp`): `npx firebase-tools@15.33.0 deploy --only hosting --message "Cloud Build $BUILD_ID @ $SHORT_SHA"`. firebase-tools picks up the build account's credentials from the metadata server (**Application Default Credentials**): no `firebase login`, no stored token.
+4. `smoke-test`: live `config.js` must contain `likesUrl`; the function must answer **401** without a token.
+
+Gotchas:
+- Every `$WORD` in the config is a **Cloud Build substitution** (`$PROJECT_ID`, `$SHORT_SHA`, `$BUILD_ID`). Bash variables must be written `$$code`, or the build is rejected.
+- `options.logging: CLOUD_LOGGING_ONLY` is required when a build runs as a user-specified service account.
+
+### G4.4 ✅ Trigger `gcp-deploy`
+
+```bash
+gcloud builds triggers create github --region=us-central1 --name=gcp-deploy \
+  --repository=projects/$P/locations/us-central1/connections/github/repositories/station_stream \
+  --branch-pattern='^main$' --build-config=gcp/cloudbuild.yaml \
+  --included-files='gcp/**,public/**,scripts/build-hosting.sh' \
+  --service-account=projects/$P/serviceAccounts/cloudbuild-deployer@$P.iam.gserviceaccount.com
+```
+The file filter mirrors the `paths-ignore` on the GitHub Actions workflow: docs-only or AWS-only commits don't start a GCP build. (`public/**` changes start **both** pipelines: the page ships to ECS and to Firebase.)
+
+**Console:** Cloud Build → Triggers (region us-central1) → Create trigger → Event: push to branch `^main$` → Repository `station_stream` (2nd gen) → Included files filter → Configuration: `gcp/cloudbuild.yaml` → Service account `cloudbuild-deployer`.
+
+### G4.5 ❌→✅ First run: the *second* identity in a function deploy
+
+**❌ Build `b9d72727` (commit `6a49025`, started by the push itself):** `build-web` ✅, `deploy-function` ❌:
+```
+Caller is missing permission 'iam.serviceaccounts.actAs' on service account
+projects/-/serviceAccounts/203966301167-compute@developer.gserviceaccount.com
+```
+**Diagnosis:** a Cloud Run function deploy involves **two** identities: the **runtime** SA (`likes-fn`, already granted) and the **build** SA that turns source into a container image, which defaults to the **default compute SA, the one with Editor** (G0.7).
+
+**The trap:** the error suggests granting actAs on the compute SA. That would let `cloudbuild-deployer` run code as an **Editor**, i.e. become an Editor: a classic GCP **privilege-escalation path** ("actAs on a powerful SA is as good as having its roles").
+
+**✅ Fix:** a dedicated build SA with only what building needs, and `--build-service-account` in the pipeline:
+```bash
+B=likes-build@$P.iam.gserviceaccount.com
+gcloud iam service-accounts create likes-build --display-name="Builds the likes function image"
+for r in roles/logging.logWriter roles/artifactregistry.writer roles/storage.objectViewer; do   # logs, push image, read uploaded source
+  gcloud projects add-iam-policy-binding $P --member=serviceAccount:$B --role=$r --condition=None
+done
+gcloud iam service-accounts add-iam-policy-binding $B \
+  --member=serviceAccount:cloudbuild-deployer@$P.iam.gserviceaccount.com --role=roles/iam.serviceAccountUser
+```
+
+**✅ Build `eb22a9ab` (commit `ad1a167`):** all four steps SUCCESS; `likes without token -> 401`, `smoke test passed`.
+
+**Check (who deployed what):**
+```bash
+gcloud functions describe likes --region=us-central1 \
+  --format='yaml(serviceConfig.revision,serviceConfig.serviceAccountEmail,buildConfig.serviceAccount,labels)'
+# revision likes-00003-por · runs as likes-fn · built by likes-build · deployed-by: cloud-build
+```
+Hosting → Release history: newest release by `cloudbuild-deployer@…` with message `Cloud Build eb22a9ab… @ ad1a167`; earlier ones by the owner's account. `gcloud run services get-iam-policy likes` → still `allUsers`. Like/list/unlike on the CI-deployed revision → 200 (first call 2.3 s: cold start + Atlas connect).
+
+**Identities after G4:**
+
+| Account | Does | Can |
+|---|---|---|
+| `cloudbuild-deployer` | runs the pipeline | deploy functions + Hosting, write logs, actAs `likes-fn` + `likes-build` only |
+| `likes-build` | builds the function image | write logs, push to Artifact Registry, read uploaded source |
+| `likes-fn` | runs the function | read the `atlas-uri` secret |
+| default compute SA | nothing any more | still has Editor: remove it (G0.7) once nothing depends on it |
+
+**G4 done.**
