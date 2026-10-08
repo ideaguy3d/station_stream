@@ -1,5 +1,7 @@
 # Station Stream: instructions for Claude
 
+> **Starting a new session? Read [docs/HANDOFF.md](docs/HANDOFF.md) first:** current state of both AWS apps and the agreed plan for the GCP version.
+
 This is a learning project. The owner is preparing for a Systems Reliability Engineer interview and is new to ECS, CloudFront, Terraform and GitHub Actions. **Learning matters more than speed.** The AWS part is the most important part.
 
 ## AWS work: console first, then log it
