@@ -26,6 +26,9 @@ steps:
       - --entry-point=likes
       - --trigger-http
       - --service-account=likes-fn@$PROJECT_ID.iam.gserviceaccount.com
+      # The function's own source-to-container build runs as this small account, not the default
+      # compute SA (Editor): actAs on an Editor account would make this pipeline an Editor.
+      - --build-service-account=projects/$PROJECT_ID/serviceAccounts/likes-build@$PROJECT_ID.iam.gserviceaccount.com
       - --set-secrets=MONGODB_URI=atlas-uri:latest
       - --set-env-vars=^;^PROJECT_ID=$PROJECT_ID;CORS_ORIGINS=https://station-stream-2026.web.app,https://station-stream-2026.firebaseapp.com
       - --max-instances=2
