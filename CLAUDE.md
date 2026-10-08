@@ -27,6 +27,11 @@ This is a learning project. The owner is preparing for a Systems Reliability Eng
 - The shell is **zsh**: unquoted `$VAR` is not split on spaces. Pass multiple values (such as subnet IDs) as separate words.
 - Resource IDs are listed at the top of `docs/aws-breadcrumbs.md`.
 
+## GCP environment
+
+- Always `export CLOUDSDK_ACTIVE_CONFIG_NAME=station-stream` (gcloud's version of `AWS_PROFILE`): project `station-stream-2026`, region `us-central1`. gcloud lives in `~/google-cloud-sdk` (`source ~/google-cloud-sdk/path.zsh.inc` in non-interactive shells). Don't touch the `default` configuration; it belongs to the owner's other work.
+- Log every GCP step in [docs/gcp-breadcrumbs.md](docs/gcp-breadcrumbs.md), same format and rules as AWS.
+
 ## How to work with the owner
 
 - Plain English. Explain every acronym or AWS term in one sentence the first time it appears.

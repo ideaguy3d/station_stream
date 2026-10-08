@@ -88,7 +88,9 @@ Supersedes the earlier "copy the whole app onto GCP" idea. Brainstormed 2026-10-
 | Aurora Serverless + Prisma | Back in scope **for later** (Terraform on app 2): catalog in Postgres, likes in MongoDB, mirroring the likely real split. Not before the interview unless time allows. |
 | Who drives | **Claude drives** (browser console + CLI) and explains, same as AWS. |
 
-### Open questions (settle before G0)
+**Status 2026-10-08:** G0 done (project `station-stream-2026`, Firebase on Blaze, site https://station-stream-2026.web.app). Decisions: CloudFront in front of ALB, anonymous Firebase Auth, Aurora after the interview. Details in [gcp-breadcrumbs.md](gcp-breadcrumbs.md).
+
+### Open questions (settled 2026-10-08, see status above)
 1. HTTPS for the API: **CloudFront in front of ALB** (recommended) vs. a Cloud Function proxy (server-to-server avoids mixed content, but adds the cross-cloud hop to every request).
 2. Firebase Auth: anonymous (no login UI, simplest) vs. Google sign-in (more realistic).
 3. Aurora before or after the interview (time: ~12 working hours left at writing, ~3–4 h reserved for studying STUDY_GUIDE.md).
