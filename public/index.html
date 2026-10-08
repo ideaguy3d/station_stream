@@ -98,7 +98,7 @@
       station(slug: $slug) {
         callSign name tagline brandColor theme
         homeRows { title shows { title description franchise { title }
-          seasons { number episodes { title number durationSeconds imageUrl
+          seasons { number episodes { id title number durationSeconds imageUrl
             fullLength { availability hlsUrl } } } } }
       }
     }`;
@@ -155,7 +155,7 @@
       const playable = asset && asset.hlsUrl;
       const label = `${show.title} · S${season.number}E${ep.number} ${ep.title}`;
       const card = document.createElement('button');
-      card.className = 'group w-64 shrink-0 snap-start text-left sm:w-72 disabled:cursor-not-allowed';
+      card.className = 'group w-full text-left disabled:cursor-not-allowed';
       card.disabled = !playable;
       card.innerHTML = `
         <div class="relative aspect-video overflow-hidden rounded-card bg-surface ring-1 ring-line shadow-md transition group-enabled:group-hover:-translate-y-1 group-enabled:group-hover:ring-2 group-enabled:group-hover:ring-brand coastal:shadow-orange-900/10 coastal:ring-4 coastal:ring-white">
@@ -170,7 +170,14 @@
         <p class="mt-2 truncate font-display text-sm font-semibold">${ep.title}</p>
         <p class="truncate text-xs text-muted">${show.title} · S${season.number} E${ep.number}</p>`;
       if (playable) card.onclick = () => play(asset.hlsUrl, label);
-      return card;
+
+      // Like button: hidden until the likes script (Firebase Hosting only) signs the viewer in.
+      const wrap = document.createElement('div');
+      wrap.className = 'relative w-64 shrink-0 snap-start sm:w-72';
+      wrap.innerHTML = `<button type="button" data-like="${ep.id}" aria-label="Like ${ep.title}" aria-pressed="false"
+        class="like-btn absolute top-2 right-2 z-10 hidden size-9 place-items-center rounded-full bg-black/60 text-lg text-white ring-1 ring-white/30 transition hover:scale-110 hover:bg-black/80 aria-pressed:text-red-500">♡</button>`;
+      wrap.prepend(card);
+      return wrap;
     }
 
     function render(data) {
@@ -202,6 +209,7 @@
             for (const ep of season.episodes) track.appendChild(episodeCard(show, season, ep));
         rows.appendChild(section);
       }
+      document.dispatchEvent(new Event('rows-rendered'));
     }
 
     $('stationPicker').onchange = (e) => { location.search = `?station=${e.target.value}`; };
@@ -210,6 +218,54 @@
       $('name').textContent = 'Could not load station';
       $('status').innerHTML = `<span class="text-red-500">${err.message}</span>`;
     });
+  </script>
+
+  <!-- Liked videos: Firebase Auth (anonymous) + the likes Cloud Run function. Only runs where config.js has them. -->
+  <script type="module">
+    const cfg = window.STATION_STREAM ?? {};
+    if (cfg.likesUrl && cfg.firebase) {
+      const { initializeApp } = await import('https://www.gstatic.com/firebasejs/12.19.0/firebase-app.js');
+      const { getAuth, signInAnonymously, onAuthStateChanged } = await import('https://www.gstatic.com/firebasejs/12.19.0/firebase-auth.js');
+      const auth = getAuth(initializeApp(cfg.firebase));
+      const liked = new Set();
+
+      // Every call carries a fresh Firebase ID token; the function verifies it and uses its uid.
+      const call = async (method, body) => {
+        const res = await fetch(cfg.likesUrl, {
+          method,
+          headers: { Authorization: `Bearer ${await auth.currentUser.getIdToken()}`, ...(body && { 'Content-Type': 'application/json' }) },
+          body: body && JSON.stringify(body),
+        });
+        if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || `likes: HTTP ${res.status}`);
+        return res.json();
+      };
+
+      const paint = () => {
+        for (const b of document.querySelectorAll('[data-like]')) {
+          const on = liked.has(b.dataset.like);
+          b.textContent = on ? '♥' : '♡';
+          b.setAttribute('aria-pressed', on);
+          b.classList.replace('hidden', 'grid');
+        }
+      };
+
+      document.addEventListener('click', async (e) => {
+        const b = e.target.closest('[data-like]');
+        if (!b) return;
+        const id = b.dataset.like, on = !liked.has(id);
+        on ? liked.add(id) : liked.delete(id); // optimistic: flip now, undo if the call fails
+        paint();
+        try { await call('POST', { episodeId: id, liked: on }); }
+        catch (err) { on ? liked.delete(id) : liked.add(id); paint(); console.error(err); }
+      });
+      document.addEventListener('rows-rendered', paint);
+
+      onAuthStateChanged(auth, async (user) => {
+        if (!user) return signInAnonymously(auth); // the uid survives reloads (stored in IndexedDB)
+        try { (await call('GET')).likes.forEach((id) => liked.add(id)); } catch (err) { console.error(err); }
+        paint();
+      });
+    }
   </script>
 </body>
 </html>

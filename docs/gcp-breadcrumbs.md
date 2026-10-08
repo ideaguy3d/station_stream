@@ -287,3 +287,135 @@ curl -s https://station-stream-2026.web.app/config.js
 **Result in the browser:** https://station-stream-2026.web.app/?station=north loads North Valley from the AWS API (8 episodes, 7 playable; footer `API: d1436kyrcdypmk.cloudfront.net`) and plays HLS at 720p from app 2's video CloudFront `d990usezj0kzv.cloudfront.net`. `https://station-stream-2026.firebaseapp.com/?station=south` loads Gulf Coast with its own theme. `http://` → `301` to `https://` (Firebase also sends **HSTS**: browsers will only ever use HTTPS for `web.app`).
 
 **Cross-cloud path of one page view:** browser → Firebase Hosting CDN (GCP) for HTML/CSS/JS → CloudFront `d1436…` → ALB → ECS task (AWS) for GraphQL → CloudFront `d990…` → S3 (AWS) for video.
+
+---
+
+## G3: Liked videos: Firebase Auth + Cloud Run function + MongoDB Atlas
+
+Mirrors Local Public's 3.0 "Liked Videos": a small per-user feature on the GCP side, while the catalog API stays on AWS.
+
+```
+browser (web.app) ── signInAnonymously ──▶ Firebase Auth ──▶ ID token (JWT)
+        └── GET/POST + "Authorization: Bearer <token>" ──▶ Cloud Run function `likes` (runs as likes-fn)
+                                                              ├─ verifyIdToken (Firebase Admin SDK)
+                                                              ├─ MONGODB_URI ◀── Secret Manager `atlas-uri`
+                                                              └─▶ MongoDB Atlas M0, GCP us-central1, db station_stream.likes
+```
+
+### G3.0 ❌→✅ MongoDB Atlas account: Marketplace vs direct
+
+**❌ First try:** Atlas through **Google Cloud Marketplace** → *"This product cannot be purchased using a billing account currently associated with a free trial."* Marketplace bills third-party products through your Google billing account, and free-trial accounts can't buy Marketplace products. AWS Marketplace has the same rule.
+
+**✅ Fix:** sign up **directly at mongodb.com**: Atlas bills you itself and the **M0** free cluster needs no card. You still pick "Google Cloud, us-central1": the cluster runs in MongoDB's own cloud account, so your GCP free trial isn't involved.
+
+Result: `Cluster0`, MongoDB 8.0, **GCP / Iowa (us-central1)** (same region as the function), replica set of 3 nodes (primary + 2 secondaries, so a node failure doesn't take it down, even on the free tier).
+
+**Security debts (fix after the interview):**
+- The DB user `julius_db_user` has **atlasAdmin**. Least privilege = a separate app user with `readWrite@station_stream` only.
+- The password was pasted into a chat transcript. Rotate it: Atlas → Database Users → Edit → **Autogenerate Secure Password** → Copy, then `pbpaste | gcloud secrets versions add atlas-uri --data-file=-` with the full new connection string, and redeploy the function (or point it at a pinned version). The old version can then be disabled: `gcloud secrets versions disable 1 --secret=atlas-uri`.
+
+### G3.1 ⏳ Atlas network access: `0.0.0.0/0` (owner's click)
+
+**What & why:** Atlas only accepts connections from IPs on the project's **IP Access List**; auto-setup added only the owner's home IP. Cloud Run functions have **no fixed outgoing IP**. The proper fixes cost money or need a paid tier: **Cloud NAT with a static IP** (route egress through one address and allow just that), or **Private Endpoint / VPC peering** (not available on M0). So: allow `0.0.0.0/0` and rely on the other layers, **TLS** (always on with `mongodb+srv`) and a **strong password**. Claude's attempt to add it was blocked by its safety classifier ("security weaken"), correctly: it's the owner's call.
+
+**Console:** Atlas → Database & Network Access → IP Access List → + ADD IP ADDRESS → `0.0.0.0/0`, comment `Cloud Run likes function (no fixed egress IP on free tier); TLS + password`, temporary **off** → Confirm.
+
+**Diagnosis story:** before the entry existed, the deployed function failed with
+```
+MongoServerSelectionError: … SSL routines … tlsv1 alert internal error … SSL alert number 80
+```
+Not "IP not allowed": Atlas's front end **cuts off the TLS handshake** for addresses not on the list. The tell: the identical code and secret worked from the Mac (allowed IP) and failed from Cloud Run.
+
+### G3.2 ✅ Connection string in Secret Manager
+
+**What & why:** **Secret Manager** stores secrets encrypted, logs every read, and keeps numbered **versions** (rotation = add a version). The value went in through stdin, so it's in no file and no command history. The function gets it as an env var injected by Cloud Run at startup; it never appears in the deploy command or the function config.
+
+```bash
+printf '%s' "$ATLAS_URI" | gcloud secrets create atlas-uri \
+  --replication-policy=automatic --labels=project=station-stream --data-file=-
+```
+
+**Check:** `gcloud secrets versions list atlas-uri` → `1  enabled`
+
+### G3.3 ✅ Dedicated runtime service account `likes-fn` (least privilege)
+
+**What & why:** the function runs as its own identity instead of the default compute SA (which has Editor, G0.7). Its only permission: **read one secret**, granted on the secret itself, not the project, so a future secret isn't readable by it.
+
+```bash
+gcloud iam service-accounts create likes-fn --display-name="likes function runtime (reads atlas-uri only)"
+gcloud secrets add-iam-policy-binding atlas-uri \
+  --member=serviceAccount:likes-fn@station-stream-2026.iam.gserviceaccount.com \
+  --role=roles/secretmanager.secretAccessor
+```
+
+**Check:** `gcloud secrets get-iam-policy atlas-uri` → only `likes-fn` has `secretAccessor`.
+
+### G3.4 ✅ Firebase Auth: anonymous sign-in + web app registration
+
+**What & why:** each visitor silently gets a real Firebase user (stable `uid`, kept in the browser's IndexedDB across reloads), no login screen. The browser gets a signed **ID token** (a JWT) to send to the function. PBS stations log in with PBS Account, not Google, so Google sign-in wouldn't be more realistic. Anonymous accounts can later be linked to a real login.
+
+**Console:** Firebase → Authentication → Get started → Sign-in method → **Anonymous** → Enable → Save. (Auto clean-up of 30-day-old anonymous accounts left off: it would orphan their likes.)
+
+The page needs a **web app registration** for the Firebase JS SDK config. The Firebase **API key is not a secret**: it identifies the project and ships in every Firebase web page; access is controlled by Auth and our token check.
+
+```bash
+firebase apps:create WEB station-stream-web --project station-stream-2026
+firebase apps:sdkconfig WEB 1:203966301167:web:1c64a346f8c7870d7eec1a
+```
+
+### G3.5 ✅ The function ([gcp/functions/likes/index.js](../gcp/functions/likes/index.js))
+
+- `GET` → `{ likes: [episodeId…] }`, `POST { episodeId, liked }` → like/unlike. Every request needs `Authorization: Bearer <Firebase ID token>`; the `uid` comes **from the verified token, never from the body**.
+- One `MongoClient` per instance, created on first use, reused (a connection per request is the classic serverless mistake); reset on failure so the next request retries.
+- Unique index `{uid, episodeId}` + upsert = **idempotent**: liking twice is still one document.
+- Input validated (`episodeId` must match `^[a-z0-9-]{1,64}$`, `liked` must be boolean).
+- **Fail fast:** `serverSelectionTimeoutMS: 5000` (driver default 30 s) and a JSON **503** with a structured `ERROR` log, instead of a 30-second hang and a bare 500.
+- Libraries: Functions Framework 5, firebase-admin 14, mongodb 7.
+
+**Tested locally first** against the real Atlas cluster with a real anonymous token (Functions Framework is the same server Cloud Run uses):
+```bash
+MONGODB_URI="$(gcloud secrets versions access latest --secret=atlas-uri)" PROJECT_ID=station-stream-2026 \
+  CORS_ORIGINS=https://station-stream-2026.web.app PORT=8090 npx functions-framework --target=likes
+TOKEN=$(curl -s -X POST "https://identitytoolkit.googleapis.com/v1/accounts:signUp?key=$FIREBASE_API_KEY" \
+  -H 'content-type: application/json' -d '{"returnSecureToken":true}' | jq -r .idToken)
+# no token → 401 · bad token → 401 · like ×2 → one doc · list → ["ep-test-1"] · unlike → [] · bad body → 400 · preflight → 204
+```
+
+### G3.6 ❌→✅ Deploy
+
+```bash
+gcloud functions deploy likes --gen2 --region=us-central1 --runtime=nodejs22 \
+  --source=gcp/functions/likes --entry-point=likes --trigger-http \
+  --allow-unauthenticated \                                  # anyone may CALL it; the function checks the Firebase token itself
+  --service-account=likes-fn@station-stream-2026.iam.gserviceaccount.com \   # not the default SA with Editor
+  --set-secrets=MONGODB_URI=atlas-uri:latest \               # secret → env var at startup
+  '--set-env-vars=^;^PROJECT_ID=station-stream-2026;CORS_ORIGINS=https://station-stream-2026.web.app,https://station-stream-2026.firebaseapp.com' \
+  --max-instances=2 \                                        # caps cost and protects Atlas's 500-connection limit
+  --memory=256Mi --update-labels=project=station-stream
+```
+(The inline `# comments` above are for reading; remove them to run it.)
+
+**❌ First error:** `argument --set-env-vars: Bad syntax for dict arg: [https://station-stream-2026.firebaseapp.com]`. `--set-env-vars` splits on commas, so the second origin looked like a broken `KEY=VALUE`. **Fix:** gcloud's escape `^;^` switches that flag's separator to `;` (`gcloud topic escaping`).
+
+**Result:** ACTIVE in 68 s. `--gen2` = a **Cloud Run function**: Cloud Build packs the source into a container, Cloud Run runs it, so there are two URLs for one thing:
+- https://us-central1-station-stream-2026.cloudfunctions.net/likes
+- https://likes-b5x7fos2oa-uc.a.run.app
+
+Note `maxInstanceRequestConcurrency: 1`: under 1 CPU (we get 0.17), each instance takes one request at a time, so at most 2 in flight. Fine for a demo; production = 1 CPU + higher concurrency.
+
+**Check:**
+```bash
+F=https://us-central1-station-stream-2026.cloudfunctions.net/likes
+curl -s -w ' [%{http_code}]\n' $F
+# {"error":"missing Authorization: Bearer <Firebase ID token>"} [401]  ← OUR 401 = allUsers may invoke.
+# (Without --allow-unauthenticated, Google's front door would answer with an HTML 403 before our code ran.)
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="likes"' --limit=10 --freshness=10m
+```
+
+### G3.7 ✅ Like buttons in the web UI
+
+- [gcp/hosting-config.json](../gcp/hosting-config.json) (committed; public identifiers only): `apiBase`, `likesUrl`, Firebase web config. `npm run build:hosting` turns it into `config.js`.
+- `public/index.html`: each episode card gets a ♡ button, **hidden by default**. A module script runs **only when `config.js` has `likesUrl` + `firebase`**: signs in anonymously, `GET`s likes, shows the hearts, and on click flips the heart **optimistically** (undoes it if the call fails). App 1 on ECS has no such config, so it never shows hearts: a feature flag through configuration.
+- Firebase JS SDK pinned to **12.19.0** (a month old). 13.0.0 had been released the day before: not the day to adopt a new major version.
+
+**Graceful degradation (seen live before G3.1):** hearts shown, the function verified the token, the database was unreachable → clean `503 likes are temporarily unavailable` after 5 s; the catalog and video kept working.

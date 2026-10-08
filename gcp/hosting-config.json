@@ -1,0 +1,10 @@
+{
+  "apiBase": "https://d1436kyrcdypmk.cloudfront.net",
+  "likesUrl": "https://us-central1-station-stream-2026.cloudfunctions.net/likes",
+  "firebase": {
+    "apiKey": "AIzaSyBYP8oLEYHbddQAq6bw5x2yUa30r2g2RuU",
+    "authDomain": "station-stream-2026.firebaseapp.com",
+    "projectId": "station-stream-2026",
+    "appId": "1:203966301167:web:1c64a346f8c7870d7eec1a"
+  }
+}
