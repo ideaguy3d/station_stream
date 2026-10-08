@@ -1,0 +1,495 @@
+# AWS breadcrumbs: every command, in order, explained
+
+This is the trail of every AWS action in this project, in the order it happened.
+For each step you get:
+
+- **What & why**: what the piece is and why it exists
+- **CLI**: the exact command that was run (or will be run)
+- **Console**: the same thing done by clicking, so you can find it in the UI
+- **Check**: a command that proves it worked
+
+Status markers: ✅ done · ❌ failed first (the error and the fix are the interview story) · 🔜 planned
+
+> Every command assumes these two lines first. They pick the limited IAM user and the region.
+> ```bash
+> export AWS_PROFILE=station-stream   # use ~/.aws credentials for station-stream-dev, never root
+> export AWS_REGION=us-east-1         # N. Virginia. Everything lives here.
+> ```
+
+## Resource IDs (not secrets, just names)
+
+| Name | Value |
+|---|---|
+| Account | `897744507899` |
+| Default VPC | `vpc-05badfb7b5abe5ec2` |
+| Subnets used | `subnet-0bd6fc96d336612c9` (us-east-1a), `subnet-07cd6ba224b429970` (us-east-1b) |
+| Load balancer security group | `sg-0e74dafa314f5550d` (`station-stream-alb`) |
+| Task security group | `sg-0f9f51d3b947f0b80` (`station-stream-task`) |
+| Target group | `arn:aws:elasticloadbalancing:us-east-1:897744507899:targetgroup/station-stream-tg/50a7c24c042c2783` |
+| Load balancer | `arn:aws:elasticloadbalancing:us-east-1:897744507899:loadbalancer/app/station-stream-alb/09b5d527936ae1a4` |
+| Public URL | http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com |
+| ECR repo | `897744507899.dkr.ecr.us-east-1.amazonaws.com/station-stream` |
+
+---
+
+## Phase 0: Account safety (done as root, in the console and CloudShell)
+
+### 0.1 ✅ $10 monthly budget, measured before credits
+
+**What & why:** AWS Budgets emails you when spending crosses a line. This is a Free plan account with $100 in credits, and a normal budget measures spending *after* credits, so it would sit at $0 and never alert. `IncludeCredit:false` makes it count real usage.
+
+**Why CLI here:** the console's "exclude credits" filter needs Cost Explorer, which only switches on about 24 hours after a new account is created. The API doesn't need it. Root has no access keys, so this ran in **CloudShell**, a terminal in the browser that's already signed in as you.
+
+```bash
+# Look up the account number of whoever is signed in
+ACCT=$(aws sts get-caller-identity --query Account --output text)
+
+# Create a $10/month cost budget that ignores credits and refunds
+aws budgets create-budget --account-id $ACCT --budget '{
+  "BudgetName": "station-stream-10usd",
+  "BudgetLimit": {"Amount": "10", "Unit": "USD"},
+  "TimeUnit": "MONTHLY",
+  "BudgetType": "COST",
+  "CostTypes": {"IncludeCredit": false, "IncludeRefund": false}
+}'
+
+# Add 3 email alerts: 85% actual, 100% actual, 100% forecast
+for n in ACTUAL:85 ACTUAL:100 FORECASTED:100; do
+  aws budgets create-notification --account-id $ACCT --budget-name station-stream-10usd \
+    --notification NotificationType=${n%%:*},ComparisonOperator=GREATER_THAN,Threshold=${n##*:},ThresholdType=PERCENTAGE \
+    --subscribers SubscriptionType=EMAIL,Address=julius@ranklab.org
+done
+```
+
+**Console:** Billing and Cost Management → Budgets → Create budget → Customize (advanced) → Cost budget → amount 10 → Budget scope → Filter specific AWS cost dimensions → Charge type → **Excludes** → Credit. That last step is the one that failed on day one.
+
+**Check:**
+```bash
+aws budgets describe-notifications-for-budget --account-id $ACCT --budget-name station-stream-10usd --output table
+```
+
+### 0.2 ✅ Limited IAM user (you clicked these; here's the CLI version for learning)
+
+**What & why:** IAM (Identity and Access Management) controls who can do what. Root can do anything, including closing the account, so daily work happens as `station-stream-dev`. Permissions go on a **group** and the user inherits them, so adding a second person later is one click.
+
+```bash
+# A group is a bundle of permissions
+aws iam create-group --group-name station-stream-builders
+
+# 7 AWS-managed policies, one per service this project uses
+for p in AmazonEC2ContainerRegistryFullAccess AmazonECS_FullAccess ElasticLoadBalancingFullAccess \
+         AmazonVPCFullAccess AmazonS3FullAccess CloudFrontFullAccess CloudWatchFullAccessV2; do
+  aws iam attach-group-policy --group-name station-stream-builders --policy-arn arn:aws:iam::aws:policy/$p
+done
+
+# Our own inline policy: IAM writes only on roles named station-stream-*
+# (stops the user from making itself an admin)
+aws iam put-group-policy --group-name station-stream-builders --policy-name station-stream-iam-scoped \
+  --policy-document file://infra/iam/builder-iam-scoped.json
+
+# The user, added to the group
+aws iam create-user --user-name station-stream-dev
+aws iam add-user-to-group --user-name station-stream-dev --group-name station-stream-builders
+
+# Access key for the CLI. Only YOU run this; the secret is shown once and goes into `aws configure`
+aws iam create-access-key --user-name station-stream-dev
+```
+
+**Console:** IAM → User groups → Create group. Then IAM → Users → Create user → Security credentials → Create access key.
+
+### 0.3 ✅ Connect the CLI, then prove the limits
+
+```bash
+aws configure --profile station-stream     # paste the keys; region us-east-1; output json
+aws sts get-caller-identity                # Arn should end in user/station-stream-dev (NOT root)
+
+# Negative tests: both SHOULD fail with AccessDenied
+aws iam create-user --user-name should-not-exist
+aws iam create-role --role-name evil-admin --assume-role-policy-document '{...}'
+```
+
+**How to read an AccessDenied:** the message names the exact **action** (`iam:CreateRole`), the **resource** (`role/evil-admin`), and the **reason** ("no identity-based policy allows"). That tells you which policy line to add or fix.
+
+---
+
+## Phase 4: ECR, the private image registry
+
+### 4.1 ✅ Create the repository
+
+**What & why:** ECR (Elastic Container Registry) stores Docker images privately. ECS pulls from it.
+- `IMMUTABLE` means a tag can never be overwritten, so version `57b8b14` is always the same bytes and rollbacks are exact.
+- `scanOnPush` checks every image for known security holes (CVEs, the public list of known vulnerabilities).
+
+```bash
+aws ecr create-repository --repository-name station-stream \
+  --image-tag-mutability IMMUTABLE \
+  --image-scanning-configuration scanOnPush=true \
+  --tags Key=project,Value=station-stream
+```
+
+**Console:** ECR → Private registry → Repositories → Create repository → Tag immutability: Immutable → Scan on push: on.
+
+### 4.2 ✅ Lifecycle policy (cost guardrail)
+
+```bash
+# Keep only the 10 newest images; older ones expire automatically
+aws ecr put-lifecycle-policy --repository-name station-stream --lifecycle-policy-text '{
+  "rules": [{"rulePriority": 1, "description": "keep last 10 images",
+             "selection": {"tagStatus": "any", "countType": "imageCountMoreThan", "countNumber": 10},
+             "action": {"type": "expire"}}]}'
+```
+
+**Console:** the repository → Lifecycle policy → Create rule.
+
+### 4.3 ✅ Log Docker in, tag with the git commit, push
+
+```bash
+REG=897744507899.dkr.ecr.us-east-1.amazonaws.com
+TAG=$(git rev-parse --short HEAD)      # e.g. 57b8b14: every image traces back to a commit
+
+# Exchange IAM credentials for a Docker password that expires after 12 hours
+aws ecr get-login-password | docker login --username AWS --password-stdin $REG
+
+# --provenance=false: one plain image per push (see the ❌ below)
+docker build --platform linux/arm64 --provenance=false -t $REG/station-stream:$TAG .
+docker push $REG/station-stream:$TAG
+```
+
+**Console:** the repository → **View push commands** shows these same commands.
+
+### 4.4 ❌→✅ Provenance attestation gotcha
+
+**What happened:** the first push created 3 entries: a tagged *index* plus two untagged children (the real image and a build-metadata record). The scan reported "not found" because it scans the real image, not the index. Worse, the lifecycle policy counts untagged children, so it could have deleted the real image while a tag still pointed at it, leaving ECS unable to pull.
+
+```bash
+# How I saw it: list every entry, including untagged ones
+aws ecr describe-images --repository-name station-stream \
+  --query 'imageDetails[].[imageTags[0]||`(untagged)`, imageManifestMediaType]' --output text
+
+# The fix: delete the 3 entries and rebuild with --provenance=false
+aws ecr batch-delete-image --repository-name station-stream --image-ids imageDigest=sha256:...
+```
+
+### 4.5 ❌→✅ Vulnerability scan found a HIGH CVE
+
+```bash
+aws ecr describe-image-scan-findings --repository-name station-stream --image-id imageTag=51b2e63 \
+  --query 'imageScanFindings.findingSeverityCounts'
+# → {"HIGH": 1}: zlib 1.3.2-r0 in the Alpine base image
+```
+
+**Fix:** `RUN apk upgrade --no-cache` in the Dockerfile picks up Alpine's patched zlib (r1). The new tag `57b8b14` scans **clean**.
+
+**Proving immutability:** pushing a different image as `51b2e63` was refused with *"cannot be overwritten because the tag is immutable"*.
+
+---
+
+## Phase 5: ECS Fargate behind a load balancer (billing ≈ $0.05/hour)
+
+Order matters: **network → firewalls → role → logs → cluster → load balancer → task definition → service.** Each piece depends on the ones before it.
+
+### 5.1 ✅ Find the network (read-only)
+
+**What & why:** a VPC (Virtual Private Cloud) is your private network in AWS. Every account has a *default VPC* with one public subnet per Availability Zone (a separate data center). The load balancer must span at least 2 zones.
+
+```bash
+aws ec2 describe-vpcs --filters Name=is-default,Values=true --query 'Vpcs[0].VpcId' --output text
+aws ec2 describe-subnets --filters Name=vpc-id,Values=vpc-05badfb7b5abe5ec2 \
+  --query 'Subnets[].[AvailabilityZone,SubnetId,MapPublicIpOnLaunch]' --output table
+```
+
+**Console:** VPC → Your VPCs (the one marked "Default VPC: Yes") → Subnets.
+
+### 5.2 ✅ Two security groups (firewalls)
+
+**What & why:** a security group allows only what you list. Two are chained together:
+- **ALB group:** port 80 from anywhere (`0.0.0.0/0`).
+- **Task group:** port 4000 only from the **ALB group**. The source is a group ID, not an IP range, so the container can't be reached directly even though it has a public IP.
+
+```bash
+ALB_SG=$(aws ec2 create-security-group --group-name station-stream-alb \
+  --description "Public HTTP to the load balancer" --vpc-id vpc-05badfb7b5abe5ec2 \
+  --query GroupId --output text)
+
+TASK_SG=$(aws ec2 create-security-group --group-name station-stream-task \
+  --description "Only the load balancer may reach the API task" --vpc-id vpc-05badfb7b5abe5ec2 \
+  --query GroupId --output text)
+
+# Inbound rule: internet → load balancer on 80
+aws ec2 authorize-security-group-ingress --group-id $ALB_SG --protocol tcp --port 80 --cidr 0.0.0.0/0
+
+# Inbound rule: load balancer group → task on 4000 (note --source-group, not --cidr)
+aws ec2 authorize-security-group-ingress --group-id $TASK_SG --protocol tcp --port 4000 --source-group $ALB_SG
+```
+
+**Console:** EC2 → Security Groups → Create security group → Inbound rules → Add rule. For the task group, set **Source** to "Custom" and pick `station-stream-alb` from the list.
+
+**Check:** get the task's public IP, then `curl http://<task-ip>:4000/health`. It **times out**, which proves the firewall works.
+
+### 5.3 ✅ Task execution role
+
+**What & why:** a *role* is a set of permissions that a service takes on temporarily, so no keys are stored. **ECS itself** uses the *execution role* to pull the image from ECR and send logs to CloudWatch. It has two parts:
+- **Trust policy** ([infra/iam/task-exec-trust.json](../infra/iam/task-exec-trust.json)): *who* may use the role. Only `ecs-tasks.amazonaws.com`, and only for this account. The `aws:SourceAccount` condition prevents the "confused deputy" attack, where another account tricks AWS into using your role.
+- **Permissions:** AWS's managed `AmazonECSTaskExecutionRolePolicy`.
+
+```bash
+aws iam create-role --role-name station-stream-task-exec \
+  --assume-role-policy-document file://infra/iam/task-exec-trust.json
+aws iam attach-role-policy --role-name station-stream-task-exec \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+```
+
+This worked only because the name starts with `station-stream-`. The Phase 0 scoped policy refuses any other name.
+
+**Console:** IAM → Roles → Create role → AWS service → Elastic Container Service → **Elastic Container Service Task** → attach `AmazonECSTaskExecutionRolePolicy`.
+
+### 5.4 ✅ Log group with retention
+
+```bash
+aws logs create-log-group --log-group-name /ecs/station-stream
+aws logs put-retention-policy --log-group-name /ecs/station-stream --retention-in-days 7   # default is forever, and billed
+```
+
+**Console:** CloudWatch → Logs → Log groups → Create log group.
+
+### 5.5 ✅ Cluster
+
+**What & why:** with Fargate there are no servers to manage, so a cluster is just a named grouping for services and tasks.
+
+```bash
+aws ecs create-cluster --cluster-name station-stream
+```
+
+**Console:** ECS → Clusters → Create cluster → infrastructure: **AWS Fargate (serverless)**.
+
+### 5.6 ✅ Target group (the list of healthy containers)
+
+**What & why:** the load balancer sends traffic to whatever is *healthy* in this group.
+- `target-type ip`: each Fargate task gets its own network address.
+- Health checks: `/health` every 15 seconds. 2 passes mark a task healthy; 3 failures mark it unhealthy.
+
+```bash
+TG_ARN=$(aws elbv2 create-target-group --name station-stream-tg --protocol HTTP --port 4000 \
+  --vpc-id vpc-05badfb7b5abe5ec2 --target-type ip \
+  --health-check-path /health --health-check-interval-seconds 15 \
+  --healthy-threshold-count 2 --unhealthy-threshold-count 3 --matcher HttpCode=200 \
+  --query 'TargetGroups[0].TargetGroupArn' --output text)
+
+# Deregistration delay: how long a draining task keeps finishing requests. Default 300s
+# makes every deploy wait 5 minutes; our requests take milliseconds.
+aws elbv2 modify-target-group-attributes --target-group-arn $TG_ARN \
+  --attributes Key=deregistration_delay.timeout_seconds,Value=30
+```
+
+**Console:** EC2 → Target Groups → Create → target type **IP addresses** → health check path `/health` → **don't register targets** (ECS does that automatically).
+
+### 5.7 ❌→✅ Application Load Balancer
+
+**What & why:** the public front door. It spans 2 zones and gets a DNS name. 💰 This is the main hourly cost (~$0.023/hr).
+
+```bash
+# ❌ First try, written zsh-style:
+SUBNETS="subnet-0bd6fc96d336612c9 subnet-07cd6ba224b429970"
+aws elbv2 create-load-balancer --name station-stream-alb --subnets $SUBNETS ...
+#   → InvalidSubnet: The subnet ID 'subnet-0bd6… subnet-07cd…' is not valid
+#   Why: zsh does NOT split $SUBNETS on spaces (bash does), so AWS got ONE id with a space in it.
+
+# ✅ Fix: pass each subnet as its own word
+aws elbv2 create-load-balancer --name station-stream-alb --type application --scheme internet-facing \
+  --subnets subnet-0bd6fc96d336612c9 subnet-07cd6ba224b429970 \
+  --security-groups sg-0e74dafa314f5550d
+```
+
+**Console:** EC2 → Load Balancers → Create → **Application Load Balancer** → Internet-facing → pick 2 subnets → security group `station-stream-alb`.
+
+### 5.8 ✅ Listener (port 80 → target group)
+
+```bash
+aws elbv2 create-listener --load-balancer-arn <ALB_ARN> --protocol HTTP --port 80 \
+  --default-actions Type=forward,TargetGroupArn=<TG_ARN>
+```
+
+**Console:** this is the "Listeners and routing" section of the load balancer wizard.
+
+### 5.9 ✅ Task definition (the container's spec)
+
+**What & why:** the image, CPU/memory, ARM chip, port, environment variables, and log destination, all in [infra/ecs/taskdef.json](../infra/ecs/taskdef.json). Each registration creates a new numbered **revision** (`:1`, `:2`, …), so a deploy is "point the service at revision N".
+
+```bash
+aws ecs register-task-definition --cli-input-json file://infra/ecs/taskdef.json
+```
+
+**Console:** ECS → Task definitions → Create new task definition → **Create with JSON** (paste the file), or fill in the form.
+
+### 5.10 ❌→✅ Service (keeps 1 task running, self-healing)
+
+```bash
+# ❌ First try included --enable-execute-command
+#   → InvalidParameterException: a valid taskRoleArn is not being used
+#   Why: ECS Exec (shelling into a container) needs a TASK role, which your app's code uses.
+#   The EXECUTION role is what ECS itself uses (pull image, write logs). Our app never calls AWS,
+#   so I dropped the flag instead of creating a role we don't need.
+
+# ✅
+aws ecs create-service --cluster station-stream --service-name api \
+  --task-definition station-stream:1 --desired-count 1 --launch-type FARGATE \
+  --network-configuration "awsvpcConfiguration={subnets=[subnet-0bd6fc96d336612c9,subnet-07cd6ba224b429970],securityGroups=[sg-0f9f51d3b947f0b80],assignPublicIp=ENABLED}" \
+  --load-balancers "targetGroupArn=<TG_ARN>,containerName=api,containerPort=4000" \
+  --health-check-grace-period-seconds 30 \
+  --deployment-configuration "deploymentCircuitBreaker={enable=true,rollback=true},minimumHealthyPercent=100,maximumPercent=200"
+```
+
+| Setting | Why |
+|---|---|
+| `assignPublicIp=ENABLED` | The task needs internet access to pull from ECR. The alternative, a NAT gateway, costs ~$32/month. The firewall still blocks everything except the load balancer. |
+| `deploymentCircuitBreaker … rollback=true` | If a new version keeps failing to start, ECS stops the deploy and rolls back on its own. |
+| `health-check-grace-period 30` | Don't count failed health checks while the app is still booting. |
+| `minimumHealthyPercent=100, maximumPercent=200` | During a deploy, start the new task *before* stopping the old one, so there's no downtime. |
+
+**Console:** ECS → Clusters → station-stream → Services → Create → Launch type FARGATE → Networking (subnets, `station-stream-task` group, Public IP **on**) → Load balancing → existing load balancer and target group.
+
+### 5.11 ✅ Watch it come up, then test
+
+```bash
+# Task lifecycle: PROVISIONING → PENDING (pulling image) → ACTIVATING → RUNNING
+aws ecs list-tasks --cluster station-stream --service-name api
+aws ecs describe-tasks --cluster station-stream --tasks <task-arn> --query 'tasks[0].lastStatus'
+
+# Target health: initial → healthy (took ~1m40s)
+aws elbv2 describe-target-health --target-group-arn <TG_ARN>
+
+# The service's own diary: the first place to look when anything goes wrong
+aws ecs describe-services --cluster station-stream --services api --query 'services[0].events[0:5].message'
+
+curl http://station-stream-alb-565835838.us-east-1.elb.amazonaws.com/health
+```
+
+**Console:** ECS → Clusters → station-stream → Services → api → tabs **Health and metrics**, **Tasks**, **Events**, **Logs**.
+
+---
+
+## Phase 6 🔜: S3 + CloudFront for video
+
+**Why:** the public page's video links still point to `http://localhost:8080`, which browsers block (`ERR_BLOCKED_BY_CLIENT`). Video moves to S3, served through CloudFront.
+
+### 6.1 🔜 Private S3 bucket
+
+**What & why:** S3 (Simple Storage Service) holds the HLS files. **Block Public Access** stays on: nobody reads the bucket directly, only CloudFront.
+
+```bash
+BUCKET=station-stream-video-897744507899      # bucket names are global, so add the account number
+aws s3api create-bucket --bucket $BUCKET       # us-east-1 needs no LocationConstraint
+aws s3api put-public-access-block --bucket $BUCKET --public-access-block-configuration \
+  BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+```
+
+**Console:** S3 → Create bucket → keep **Block all public access** checked.
+
+### 6.2 🔜 Upload video with correct content types
+
+```bash
+# sync uploads only what changed. Playlists change rarely; segments never do once made.
+aws s3 sync video/out s3://$BUCKET/ --exclude "*.m3u8" --cache-control "public,max-age=31536000,immutable"
+aws s3 sync video/out s3://$BUCKET/ --exclude "*" --include "*.m3u8" \
+  --content-type application/vnd.apple.mpegurl --cache-control "public,max-age=300"
+```
+
+### 6.3 🔜 CloudFront with Origin Access Control
+
+**What & why:** CloudFront is AWS's CDN: copies of the video sit in data centers near viewers. **Origin Access Control (OAC)** lets CloudFront sign its requests to S3, and a bucket policy allows *only that distribution* to read.
+
+```bash
+aws cloudfront create-origin-access-control --origin-access-control-config \
+  Name=station-stream-oac,SigningProtocol=sigv4,SigningBehavior=always,OriginAccessControlOriginType=s3
+
+aws cloudfront create-distribution --distribution-config file://infra/cloudfront/distribution.json
+#  - origin: the bucket, using the OAC above
+#  - viewer protocol: redirect-to-https
+#  - cache policy: Managed-CachingOptimized
+#  - response headers policy: Managed-CORS-With-Preflight (lets the page on the ALB domain fetch video)
+#  - PriceClass_100: only North America/Europe edge locations (cheapest)
+
+# Bucket policy: only this distribution may read objects
+aws s3api put-bucket-policy --bucket $BUCKET --policy file://infra/s3/bucket-policy.json
+#  Principal: cloudfront.amazonaws.com; Condition: AWS:SourceArn = the distribution's ARN
+```
+
+**Console:** CloudFront → Create distribution → Origin domain: the bucket → Origin access: **Origin access control settings** → Create new OAC. CloudFront then offers to **copy the bucket policy** for you to paste into S3 → bucket → Permissions.
+
+**Check:** `curl -I https://<id>.cloudfront.net/ship-it/master.m3u8` returns **200**, while the same file straight from S3 (`https://$BUCKET.s3.amazonaws.com/ship-it/master.m3u8`) returns **403 AccessDenied**. That proves the bucket is private and only CloudFront can read it.
+
+### 6.4 🔜 Rolling deploy with the new video URL
+
+```bash
+# taskdef.json: VIDEO_BASE_URL = https://<id>.cloudfront.net, then register revision 2
+aws ecs register-task-definition --cli-input-json file://infra/ecs/taskdef.json
+aws ecs update-service --cluster station-stream --service api --task-definition station-stream:2
+# Watch: a new task starts → becomes healthy → old task drains (30s) → stops. No downtime.
+```
+
+**Console:** ECS → service api → **Deployments** tab shows old and new running side by side.
+
+---
+
+## Phase 7 🔜: Monitoring, alarms, autoscaling, self-healing
+
+```bash
+# Where alarm emails go. SNS (Simple Notification Service) is a pub/sub topic.
+aws sns create-topic --name station-stream-alerts
+aws sns subscribe --topic-arn <topic-arn> --protocol email --notification-endpoint julius@ranklab.org
+
+# Alarm 1: the app returned any 5xx errors in a 1-minute window
+aws cloudwatch put-metric-alarm --alarm-name station-stream-5xx \
+  --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count \
+  --dimensions Name=LoadBalancer,Value=app/station-stream-alb/09b5d527936ae1a4 \
+  --statistic Sum --period 60 --evaluation-periods 1 --threshold 1 \
+  --comparison-operator GreaterThanOrEqualToThreshold --treat-missing-data notBreaching \
+  --alarm-actions <topic-arn>
+
+# Alarm 2: any target is unhealthy
+aws cloudwatch put-metric-alarm --alarm-name station-stream-unhealthy \
+  --namespace AWS/ApplicationELB --metric-name UnHealthyHostCount \
+  --dimensions Name=TargetGroup,Value=targetgroup/station-stream-tg/50a7c24c042c2783 \
+               Name=LoadBalancer,Value=app/station-stream-alb/09b5d527936ae1a4 \
+  --statistic Maximum --period 60 --evaluation-periods 2 --threshold 1 \
+  --comparison-operator GreaterThanOrEqualToThreshold --alarm-actions <topic-arn>
+
+# Autoscaling: 1 to 2 tasks, aiming for 60% average CPU
+aws application-autoscaling register-scalable-target --service-namespace ecs \
+  --resource-id service/station-stream/api --scalable-dimension ecs:service:DesiredCount \
+  --min-capacity 1 --max-capacity 2
+aws application-autoscaling put-scaling-policy --service-namespace ecs \
+  --resource-id service/station-stream/api --scalable-dimension ecs:service:DesiredCount \
+  --policy-name cpu60 --policy-type TargetTrackingScaling \
+  --target-tracking-scaling-policy-configuration \
+  '{"TargetValue":60,"PredefinedMetricSpecification":{"PredefinedMetricType":"ECSServiceAverageCPUUtilization"}}'
+
+# Chaos test: kill the running task on purpose and watch ECS replace it
+aws ecs stop-task --cluster station-stream --task <task-arn> --reason "chaos test"
+```
+
+**Console:** CloudWatch → Alarms → Create alarm. ECS → service → **Service auto scaling**. ECS → Tasks → select one → **Stop**.
+
+---
+
+## Teardown (reverse order of creation)
+
+Dependencies must go first: the service before the cluster, the load balancer before its security group, the task security group before the ALB group it references.
+
+```bash
+aws ecs update-service --cluster station-stream --service api --desired-count 0
+aws ecs delete-service --cluster station-stream --service api --force
+aws ecs delete-cluster --cluster station-stream
+aws elbv2 delete-load-balancer --load-balancer-arn <ALB_ARN>        # 💰 stops the main hourly cost
+aws elbv2 delete-target-group --target-group-arn <TG_ARN>           # after the ALB is gone
+aws ec2 delete-security-group --group-id sg-0f9f51d3b947f0b80       # task group first: it references the ALB group
+aws ec2 delete-security-group --group-id sg-0e74dafa314f5550d       # may need a minute while network interfaces release
+aws logs delete-log-group --log-group-name /ecs/station-stream
+aws iam detach-role-policy --role-name station-stream-task-exec \
+  --policy-arn arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+aws iam delete-role --role-name station-stream-task-exec
+aws ecr delete-repository --repository-name station-stream --force
+# Phase 6+: disable then delete the CloudFront distribution, empty and delete the bucket
+```
+
+**Check nothing is left:** `aws resourcegroupstaggingapi get-resources --tag-filters Key=project,Values=station-stream`
