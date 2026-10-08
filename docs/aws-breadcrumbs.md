@@ -513,28 +513,136 @@ Player status line on the public URL: **"720p @ 3306 kbps · 2 renditions · aut
 
 ## Phase 7 🔜: Monitoring, alarms, autoscaling, self-healing
 
+### 7.1 ❌→✅ SNS topic for alerts
+
+**What & why:** SNS (Simple Notification Service) is publish/subscribe. Alarms *publish* to a topic; everything *subscribed* (email now, PagerDuty/Slack in production) gets the message. Alarms don't need to know who's listening.
+
+**Console:** SNS → Topics → Create topic → Type **Standard** (the default is **FIFO**, which preserves order but **can't deliver email**) → Name `station-stream-alerts` → Display name `StationStrm` (SMS shows only 10 characters) → Encryption off, Access policy Basic → Tags `project=station-stream` → Create topic.
+
+**Red herring on page load:** a red banner `Couldn't retrieve KMS keys … not authorized to perform kms:DescribeKey`. The form tries to list KMS keys to fill its optional encryption dropdown. We aren't using a custom key, so it changes nothing. Read *which action* failed before deciding whether an error matters.
+
+**❌ The real failure on Create topic:**
+```
+AuthorizationError: User: …user/station-stream-dev is not authorized to perform: SNS:TagResource
+on resource: arn:aws:sns:us-east-1:897744507899:station-stream-alerts
+because no identity-based policy allows the SNS:TagResource action
+```
+**Diagnosis:** our SNS rights come from the managed `CloudWatchFullAccessV2`. Instead of guessing, read what it actually grants:
 ```bash
-# Where alarm emails go. SNS (Simple Notification Service) is a pub/sub topic.
-aws sns create-topic --name station-stream-alerts
-aws sns subscribe --topic-arn <topic-arn> --protocol email --notification-endpoint julius@ranklab.org
+ARN=arn:aws:iam::aws:policy/CloudWatchFullAccessV2
+V=$(aws iam get-policy --policy-arn $ARN --query Policy.DefaultVersionId --output text)
+aws iam get-policy-version --policy-arn $ARN --version-id $V --query 'PolicyVersion.Document.Statement[].Action'
+# → SNS: CreateTopic, Subscribe, ListTopics, ListSubscriptions, ListSubscriptionsByTopic. That's all.
+```
+Two gaps: `TagResource` (today's error) and **`DeleteTopic`/`Unsubscribe`, so teardown would have failed later too.** The failed create was all-or-nothing: no topic exists.
 
-# Alarm 1: the app returned any 5xx errors in a 1-minute window
-aws cloudwatch put-metric-alarm --alarm-name station-stream-5xx \
-  --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count \
-  --dimensions Name=LoadBalancer,Value=app/station-stream-alb/09b5d527936ae1a4 \
-  --statistic Sum --period 60 --evaluation-periods 1 --threshold 1 \
-  --comparison-operator GreaterThanOrEqualToThreshold --treat-missing-data notBreaching \
-  --alarm-actions <topic-arn>
+**Fix:** a new statement in [infra/iam/builder-iam-scoped.json](../infra/iam/builder-iam-scoped.json), scoped to topics named `station-stream-*` (same pattern as the IAM roles):
+```json
+{ "Sid": "ManageStationStreamTopics", "Effect": "Allow",
+  "Action": ["sns:TagResource","sns:UntagResource","sns:ListTagsForResource","sns:GetTopicAttributes",
+             "sns:SetTopicAttributes","sns:DeleteTopic","sns:GetSubscriptionAttributes","sns:Unsubscribe"],
+  "Resource": "arn:aws:sns:us-east-1:897744507899:station-stream-*" }
+```
+Applied by the owner (permission changes are blocked for Claude): IAM → User groups → station-stream-builders → Permissions → `station-stream-iam-scoped` → Edit → JSON → paste → Next → Save changes.
+```bash
+# CLI equivalent (run as an admin, not as station-stream-dev):
+aws iam put-group-policy --group-name station-stream-builders --policy-name station-stream-iam-scoped \
+  --policy-document file://infra/iam/builder-iam-scoped.json
+```
 
-# Alarm 2: any target is unhealthy
-aws cloudwatch put-metric-alarm --alarm-name station-stream-unhealthy \
+**✅ Retry:** Create topic succeeded *with* the tag, which proves the policy change applied. Topic ARN `arn:aws:sns:us-east-1:897744507899:station-stream-alerts`.
+
+### 7.2 ✅ Email subscription (needs the owner to click a link)
+
+**Console:** the topic → Create subscription → Protocol **Email** (not Email-JSON, which is raw JSON for programs) → Endpoint `julius@ranklab.org` → Create subscription. Status starts as **Pending confirmation**: AWS emails a link, and nothing is delivered until it's clicked. That opt-in stops anyone from subscribing someone else's inbox.
+
+```bash
+# CLI equivalent
+aws sns subscribe --topic-arn arn:aws:sns:us-east-1:897744507899:station-stream-alerts \
+  --protocol email --notification-endpoint julius@ranklab.org
+```
+
+**Check:**
+```bash
+aws sns list-subscriptions-by-topic --topic-arn arn:aws:sns:us-east-1:897744507899:station-stream-alerts \
+  --query 'Subscriptions[].[Protocol,Endpoint,SubscriptionArn]'
+# SubscriptionArn shows "PendingConfirmation" until the email link is clicked
+```
+
+### 7.3 ✅ CloudWatch alarms (1 in the console, 3 via CLI because they're repetitive)
+
+**What & why:** CloudWatch stores **metrics**, numbers the load balancer reports every minute. An **alarm** watches one metric, flips OK → ALARM when it crosses a threshold, and publishes to the SNS topic (and again on recovery, via `--ok-actions`).
+
+**Design choice:** with **one** task, stopping it makes ECS **deregister** the target first (it shows as *draining*, not *unhealthy*), so an UnHealthyHostCount alarm can stay **silent during a total outage**. The alarm that catches an outage is **HealthyHostCount < 1**.
+
+| Alarm | Metric | Stat / period | Missing data | Catches |
+|---|---|---|---|---|
+| `no-healthy-targets` | HealthyHostCount (TG + LB) | Minimum, 1 min, < 1, 1 of 1 | **breaching** | Outage: nothing can serve |
+| `unhealthy-targets` | UnHealthyHostCount (TG + LB) | Maximum, 1 min, ≥ 1, 2 of 2 | notBreaching | A task failing `/health` |
+| `target-5xx` | HTTPCode_Target_5XX_Count (LB) | Sum, 1 min, ≥ 1 | notBreaching | **The app** returned a server error |
+| `elb-5xx` | HTTPCode_ELB_5XX_Count (LB) | Sum, 1 min, ≥ 1 | notBreaching | **The load balancer** answered 503 (no healthy target) |
+
+**Missing data is the subtle setting:** 5xx counts publish *nothing* when there are zero errors, so missing = fine (`notBreaching`). HealthyHostCount is always published, so missing = something's wrong (`breaching`). A wrong choice gives an alarm that never fires or never stops.
+
+**Console (the first alarm):** CloudWatch → Alarms → Create alarm →
+1. Data source **Metrics**, type **Classic** → Select metric → search `HealthyHostCount` → **ApplicationELB > Per AppELB, per TG Metrics** (not "per AZ": an outage is zero healthy targets *everywhere*) → tick HealthyHostCount (not UnHealthyHostCount, which also matches the search) → Select metric.
+2. Statistic **Minimum** (a dip to 0 within the minute shows; Average would smooth it away), Period **1 minute** (ALB metrics are per-minute; 10–30s options are high-resolution and cost more). Threshold **Static**, **Lower** than **1**. Additional configuration: 1 of 1 datapoints, missing data **"Treat missing data as bad (breaching threshold)"**.
+3. Actions: Notification **In alarm** → `station-stream-alerts`; **Add notification** → **OK** → same topic (recovery emails tell on-call it's over).
+4. Name `station-stream-no-healthy-targets`, description written as a mini runbook (it's included in the email), tag `project=station-stream` → Create alarm.
+
+New alarms start as **INSUFFICIENT_DATA** until their first datapoint. The console also showed **"Some subscriptions are pending confirmation"**: no email goes out until the link is clicked.
+
+**CLI (all four):**
+```bash
+TOPIC=arn:aws:sns:us-east-1:897744507899:station-stream-alerts
+LB=app/station-stream-alb/09b5d527936ae1a4
+TG=targetgroup/station-stream-tg/50a7c24c042c2783
+
+aws cloudwatch put-metric-alarm --alarm-name station-stream-no-healthy-targets \
+  --namespace AWS/ApplicationELB --metric-name HealthyHostCount \
+  --dimensions Name=TargetGroup,Value=$TG Name=LoadBalancer,Value=$LB \
+  --statistic Minimum --period 60 --evaluation-periods 1 --threshold 1 \
+  --comparison-operator LessThanThreshold --treat-missing-data breaching \
+  --alarm-actions $TOPIC --ok-actions $TOPIC
+
+aws cloudwatch put-metric-alarm --alarm-name station-stream-unhealthy-targets \
   --namespace AWS/ApplicationELB --metric-name UnHealthyHostCount \
-  --dimensions Name=TargetGroup,Value=targetgroup/station-stream-tg/50a7c24c042c2783 \
-               Name=LoadBalancer,Value=app/station-stream-alb/09b5d527936ae1a4 \
-  --statistic Maximum --period 60 --evaluation-periods 2 --threshold 1 \
-  --comparison-operator GreaterThanOrEqualToThreshold --alarm-actions <topic-arn>
+  --dimensions Name=TargetGroup,Value=$TG Name=LoadBalancer,Value=$LB \
+  --statistic Maximum --period 60 --evaluation-periods 2 --datapoints-to-alarm 2 --threshold 1 \
+  --comparison-operator GreaterThanOrEqualToThreshold --treat-missing-data notBreaching \
+  --alarm-actions $TOPIC --ok-actions $TOPIC
 
-# Autoscaling: 1 to 2 tasks, aiming for 60% average CPU
+aws cloudwatch put-metric-alarm --alarm-name station-stream-target-5xx \
+  --namespace AWS/ApplicationELB --metric-name HTTPCode_Target_5XX_Count \
+  --dimensions Name=LoadBalancer,Value=$LB --statistic Sum --period 60 --evaluation-periods 1 \
+  --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold --treat-missing-data notBreaching \
+  --alarm-actions $TOPIC --ok-actions $TOPIC
+
+aws cloudwatch put-metric-alarm --alarm-name station-stream-elb-5xx \
+  --namespace AWS/ApplicationELB --metric-name HTTPCode_ELB_5XX_Count \
+  --dimensions Name=LoadBalancer,Value=$LB --statistic Sum --period 60 --evaluation-periods 1 \
+  --threshold 1 --comparison-operator GreaterThanOrEqualToThreshold --treat-missing-data notBreaching \
+  --alarm-actions $TOPIC --ok-actions $TOPIC
+```
+
+**Check:**
+```bash
+aws cloudwatch describe-alarms --alarm-name-prefix station-stream \
+  --query 'MetricAlarms[].[AlarmName,StateValue,MetricName,Statistic,Threshold,TreatMissingData]' --output table
+```
+
+### 7.4 ✅ Autoscaling: 1–2 tasks, target 60% CPU (done in the console)
+
+**What & why:** Application Auto Scaling changes the service's task count. **Target tracking** works like a thermostat: set 60% average CPU, and it adds a task above that and removes one well below it. **Max 2** is a cost cap (the console defaulted to **10**). Scaling is free; a second task bills (~$0.008/hr) only while it runs.
+
+**Console (what was clicked):** ECS → station-stream → api → **Service auto scaling** tab (scroll the tab bar right) →
+1. **Set the number of tasks** → tick "Use service auto scaling" → Min **1**, Max **2** (changed from 10) → Save.
+2. **Create scaling policy** → **Target tracking** (vs Step scaling: fixed rules per threshold; Predictive: learns daily patterns, handy for prime-time peaks) → name `cpu60` → metric **ECSServiceAverageCPUUtilization** → target **60** → Additional settings left at defaults (300s scale-out and scale-in cooldowns, so the count doesn't flap) → Create.
+
+AWS created the service-linked role `AWSServiceRoleForApplicationAutoScaling_ECSService` automatically (allowed by `iam:CreateServiceLinkedRole` in our scoped policy).
+
+**CLI equivalent:**
+```bash
 aws application-autoscaling register-scalable-target --service-namespace ecs \
   --resource-id service/station-stream/api --scalable-dimension ecs:service:DesiredCount \
   --min-capacity 1 --max-capacity 2
@@ -543,12 +651,27 @@ aws application-autoscaling put-scaling-policy --service-namespace ecs \
   --policy-name cpu60 --policy-type TargetTrackingScaling \
   --target-tracking-scaling-policy-configuration \
   '{"TargetValue":60,"PredefinedMetricSpecification":{"PredefinedMetricType":"ECSServiceAverageCPUUtilization"}}'
-
-# Chaos test: kill the running task on purpose and watch ECS replace it
-aws ecs stop-task --cluster station-stream --task <task-arn> --reason "chaos test"
 ```
 
-**Console:** CloudWatch → Alarms → Create alarm. ECS → service → **Service auto scaling**. ECS → Tasks → select one → **Stop**.
+**Check, and a design detail:** target tracking quietly creates **two CloudWatch alarms of its own**:
+```bash
+aws application-autoscaling describe-scaling-policies --service-namespace ecs --resource-id service/station-stream/api
+aws cloudwatch describe-alarms --alarm-name-prefix TargetTracking \
+  --query 'MetricAlarms[].[AlarmName,ComparisonOperator,Threshold,EvaluationPeriods]' --output table
+```
+| Auto-created alarm | Rule | Effect |
+|---|---|---|
+| `…-AlarmHigh-…` | CPU > 60% for **3** minutes | scale **out fast** |
+| `…-AlarmLow-…` | CPU < 54% for **15** minutes | scale **in slowly** |
+
+Asymmetric on purpose: too little capacity hurts users, an extra task for a few minutes costs pennies. The 54% (not 60%) low threshold stops the count bouncing between 1 and 2. Don't edit or delete these alarms by hand; the policy owns them.
+
+### 7.5 🔜 Chaos test: stop the task on purpose
+
+```bash
+aws ecs stop-task --cluster station-stream --task <task-arn> --reason "chaos test"
+```
+**Console:** ECS → station-stream → api → **Tasks** tab → tick the task → **Stop** → Stop selected.
 
 ---
 
