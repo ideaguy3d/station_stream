@@ -818,6 +818,8 @@ aws iam update-assume-role-policy --role-name station-stream-github-deploy \
 
 **Result:** all 8 steps green in 3m26s. Live `/health` → `"version":"be5ccf1"`; service on `station-stream:3`; image `be5ccf1` scanned clean; smoke test passed on attempt 1; **0 secrets stored in GitHub**.
 
+**Second deploy, triggered by a normal `git push` (commit `0c5fffd`):** green in 7m28s, live version `0c5fffd`. Why slower: build 9s, but "Deploy to ECS" took **428s vs 178s**. ECS itself reached steady state in ~2.5 min (21:19:05 → 21:21:27); the step ran 21:18:53 → 21:26:01. The action's "wait until stable" check polls with **exponential backoff** (15s, 30s, 60s … up to 2 min between polls), so it noticed ~4.5 min late. The deploy was fast; *knowing* it was done was slow. The log line `AWS_ACCESS_KEY_ID: ***` is the temporary OIDC credential, masked by GitHub, not a stored key.
+
 **Check:**
 ```bash
 gh run list --repo ideaguy3d/station_stream --limit 3
