@@ -1030,9 +1030,9 @@ aws ecs describe-services --cluster station-stream-tf --services api \
 
 ---
 
-## Phase L1 🔜: Aurora PostgreSQL Serverless v2 holds the catalog (Terraform, app 2)
+## Phase L1 ✅: Aurora PostgreSQL Serverless v2 holds the catalog (Terraform, app 2)
 
-> Plan: [PLAN-L1-L2.md](PLAN-L1-L2.md). Terraform file: [terraform/database.tf](../terraform/database.tf). Cost: Aurora Serverless v2 bills per ACU-hour (about $0.12 in us-east-1 *(verify)*); **$0 compute while auto-paused**, up to ~$0.48/h at the 4-ACU cap. Two secrets: $0.40/month each.
+> Plan: [PLAN-L1-L2.md](PLAN-L1-L2.md). Terraform file: [terraform/database.tf](../terraform/database.tf). Cost: Aurora Serverless v2 bills **$0.12 per ACU-hour** in us-east-1 (confirmed on the RDS console's Monitoring tab), storage $0.10/GB-month; **$0 compute while auto-paused**, up to ~$0.48/h at the 4-ACU cap. Two secrets: $0.40/month each.
 
 ### L1.0 ❌ What the IAM user can't do yet (the permissions check)
 
@@ -1210,6 +1210,27 @@ SELECT current_user, (SELECT count(*) FROM stations) AS stations, (SELECT count(
 -- api_reader | 2 | 4 | 8
 ```
 `terraform plan` afterwards → *No changes*.
+
+### L1.9 ✅ Auto-pause to 0 ACU (the "$0 when idle" proof)
+
+**What & why:** with `min_capacity = 0` and `seconds_until_auto_pause = 300`, Aurora stops compute after 5 minutes with **no connections**. The API only queries on GraphQL traffic (at most once a minute) and closes idle pool connections after 30 s, and `/health` and the GCP uptime check never touch the database, so with no viewers it can sleep.
+```bash
+# Watch the live capacity (ACU) and connection count, one line a minute
+aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name ServerlessDatabaseCapacity \
+  --dimensions Name=DBClusterIdentifier,Value=station-stream-tf-db --period 60 --statistics Minimum \
+  --start-time $(date -u -v-3M +%Y-%m-%dT%H:%M:%SZ) --end-time $(date -u +%Y-%m-%dT%H:%M:%SZ)
+# same with --metric-name DatabaseConnections --statistics Maximum
+```
+**Result:**
+```
+05:44:50 ACU=0.5 connections=0     <- last API query was 05:38; its pool had closed
+05:45:52 ACU=0.5 connections=1     <- the Query Editor's Data API connection, held ~4 min after the query
+05:49:59 ACU=0.5 connections=0
+05:54:06 ACU=0.0 connections=0     <- paused, 5 min after the last connection closed
+```
+**Console:** RDS → Databases → `station-stream-tf-db-1` → Monitoring → filter "Serverless" → **ServerlessDatabaseCapacity**: 4 ACU right after creation + migration, then ~2.2 → ~1 → 0.5 → 0. It scales up fast and down gradually. Status still says *Available* while paused (it resumes on the next connection), so the graph, not the status, is how you see a pause.
+
+**Red herring:** a console banner `not authorized to perform: dbqms:CreateQueryHistory`. That's the Query Editor saving query *history*; the query itself worked. Not granted.
 
 ---
 
