@@ -617,3 +617,23 @@ curl -s -G "https://monitoring.googleapis.com/v3/projects/station-stream-2026/ti
 **Result (first ~10 minutes):** `check_passed = true` from usa-virginia, usa-oregon and eur-belgium (usa-iowa's first results lag); `request_latency` ≈ 170 ms (Oregon) and 196 ms (Belgium). Every probe crosses to the ALB in us-east-1, since CloudFront caching is off for the API.
 
 **G5 done.** GCP now watches AWS from outside; an outage of the API emails julius@ranklab.org within ~3 minutes, with a runbook in the email.
+
+---
+
+## G6: Player autoplays the first episode (UI change, shipped by the G4 pipeline)
+
+**What & why:** the player used to sit black until a viewer clicked an episode, which looked like a bug. Now, after the station loads, the first public episode on its first row starts **muted** (the only autoplay browsers allow without a click), shows its thumbnail as the poster while loading, and offers a **"🔇 Tap to unmute"** badge. Clicking an episode card is a user gesture, so those play with sound. Viewers who ask for reduced motion get the video loaded and paused on its poster.
+
+**Ship:** commit `public/index.html` → push → Cloud Build trigger `gcp-deploy` (matches `public/**`) builds and deploys Hosting; GitHub Actions redeploys app 1's copy of the page.
+```bash
+gcloud builds list --region=us-central1 --limit=3 --format='value(status,substitutions.SHORT_SHA,createTime)'
+# SUCCESS 902fe78 (autoplay)   SUCCESS 9fb18fd (retry + logging)
+```
+
+**❌→✅ "It doesn't play on the live site" (in Claude's browser pane):** loaded, but paused at 0:00. Locally it had played. Rather than guess, the second commit logs the refusal reason; the live page then showed:
+```
+play() refused: AbortError: The play() request was interrupted because video-only background media was paused to save power. (page hidden)
+```
+**Diagnosis:** the browser pane reports `document.visibilityState = "hidden"`. Chrome treats a **muted** video as "video-only" and won't play it in a page that isn't visible (battery saving). Not a bug in the site, but the same thing happens to a real viewer who opens the site in a background tab. **Fix:** on that refusal, retry once on `visibilitychange`, so playback starts when the tab is shown.
+
+**Check (in a normal, visible browser tab):** https://station-stream-2026.web.app/?station=north starts playing muted within a second or two; the console shows no `play() refused` line.
