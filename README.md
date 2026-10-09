@@ -11,7 +11,7 @@ It is a hands-on reliability-engineering project across **AWS and Google Cloud**
 ## Architecture
 
 ```mermaid
-flowchart LR
+flowchart TB
     subgraph GCP["Google Cloud / Firebase (app-facing)"]
         Web["Web UI<br/>Firebase Hosting"]
         Auth["Firebase Auth<br/>(anonymous)"]
