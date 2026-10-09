@@ -3,12 +3,13 @@
 variable "db_engine_version" {
   description = "Aurora PostgreSQL version. Must support scaling to 0 ACU (auto-pause)."
   type        = string
-  default     = "16.6" # placeholder, confirmed with: aws rds describe-db-engine-versions
+  default     = "16.15" # newest 16.x that lists ServerlessV2 MinCapacity 0 in: aws rds describe-db-engine-versions
 }
 
 variable "db_name" {
-  type    = string
-  default = "catalog"
+  description = "Not \"catalog\": that is a reserved word in Aurora PostgreSQL."
+  type        = string
+  default     = "stationstream"
 }
 
 variable "db_max_acu" {
@@ -106,4 +107,100 @@ resource "aws_secretsmanager_secret" "api_reader" {
 resource "aws_secretsmanager_secret_version" "api_reader" {
   secret_id     = aws_secretsmanager_secret.api_reader.id
   secret_string = jsonencode({ username = "api_reader", password = random_password.api_reader.result })
+}
+
+# --- Who may read which secret ------------------------------------------------------------------
+# ECS's execution role fetches secrets at task start and injects them as env vars. The API's
+# role may read ONLY the read-only user's secret; the admin secret goes to the migration role.
+
+resource "aws_iam_role_policy" "task_exec_api_reader_secret" {
+  name = "read-api-reader-secret"
+  role = aws_iam_role.task_exec.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = "secretsmanager:GetSecretValue"
+      Resource = aws_secretsmanager_secret.api_reader.arn
+    }]
+  })
+}
+
+resource "aws_iam_role" "migrate_exec" {
+  name               = "${var.name}-migrate-exec"
+  assume_role_policy = data.aws_iam_policy_document.ecs_tasks_trust.json
+}
+
+resource "aws_iam_role_policy_attachment" "migrate_exec" {
+  role       = aws_iam_role.migrate_exec.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy"
+}
+
+resource "aws_iam_role_policy" "migrate_exec_secrets" {
+  name = "read-db-secrets"
+  role = aws_iam_role.migrate_exec.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Action = "secretsmanager:GetSecretValue"
+      Resource = [
+        aws_rds_cluster.db.master_user_secret[0].secret_arn, # admin: creates tables and the api_reader role
+        aws_secretsmanager_secret.api_reader.arn,            # the password to give api_reader
+      ]
+    }]
+  })
+}
+
+# --- The migration: a one-off task, same image, different command --------------------------------
+# Run with `aws ecs run-task` (see outputs). "Migrations run as a task before the deploy."
+
+resource "aws_ecs_task_definition" "migrate" {
+  family                   = "${var.name}-migrate"
+  network_mode             = "awsvpc"
+  requires_compatibilities = ["FARGATE"]
+  cpu                      = "256"
+  memory                   = "512"
+  execution_role_arn       = aws_iam_role.migrate_exec.arn
+  depends_on               = [aws_iam_role_policy.migrate_exec_secrets]
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  container_definitions = jsonencode([{
+    name      = "migrate"
+    image     = "${aws_ecr_repository.app.repository_url}:${var.image_tag}"
+    essential = true
+    command   = ["node", "src/db/migrate.js"]
+    environment = [
+      { name = "PGHOST", value = aws_rds_cluster.db.endpoint },
+      { name = "PGDATABASE", value = var.db_name },
+      { name = "PGUSER", value = aws_rds_cluster.db.master_username },
+    ]
+    # "<secret ARN>:<json key>::" picks one field out of a JSON secret.
+    secrets = [
+      { name = "PGPASSWORD", valueFrom = "${aws_rds_cluster.db.master_user_secret[0].secret_arn}:password::" },
+      { name = "API_READER_PASSWORD", valueFrom = "${aws_secretsmanager_secret.api_reader.arn}:password::" },
+    ]
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.app.name
+        "awslogs-region"        = var.region
+        "awslogs-stream-prefix" = "migrate"
+      }
+    }
+  }])
+}
+
+output "db_endpoint" {
+  description = "Writer endpoint (private: only tasks in the task security group can connect)."
+  value       = aws_rds_cluster.db.endpoint
+}
+
+output "migrate_command" {
+  description = "Runs the schema + seed migration as a one-off Fargate task."
+  value       = "aws ecs run-task --cluster ${aws_ecs_cluster.app.name} --task-definition ${aws_ecs_task_definition.migrate.family} --launch-type FARGATE --network-configuration 'awsvpcConfiguration={subnets=[${join(",", local.subnet_ids)}],securityGroups=[${aws_security_group.task.id}],assignPublicIp=ENABLED}'"
 }

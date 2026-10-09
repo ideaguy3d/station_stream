@@ -17,6 +17,9 @@ resource "aws_ecs_task_definition" "app" {
   memory                   = "512"
   execution_role_arn       = aws_iam_role.task_exec.arn
 
+  # The role must be allowed to read the DB secret BEFORE a task using it starts.
+  depends_on = [aws_iam_role_policy.task_exec_api_reader_secret]
+
   runtime_platform {
     cpu_architecture        = "ARM64"
     operating_system_family = "LINUX"
@@ -32,6 +35,14 @@ resource "aws_ecs_task_definition" "app" {
       # Wired automatically to this app's own CloudFront: the step app 1 needed a manual revision for.
       { name = "VIDEO_BASE_URL", value = "https://${aws_cloudfront_distribution.video.domain_name}" },
       { name = "CORS_ORIGINS", value = join(",", var.cors_origins) },
+      # L1: catalog from Aurora as the read-only user. Without PGHOST the app uses the bundled JSON.
+      { name = "PGHOST", value = aws_rds_cluster.db.endpoint },
+      { name = "PGDATABASE", value = var.db_name },
+      { name = "PGUSER", value = "api_reader" },
+    ]
+    # ECS reads the secret at task start (via the execution role) and sets it as an env var.
+    secrets = [
+      { name = "PGPASSWORD", valueFrom = "${aws_secretsmanager_secret.api_reader.arn}:password::" },
     ]
     stopTimeout = 30
     logConfiguration = {

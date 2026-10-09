@@ -1068,7 +1068,7 @@ aws iam put-group-policy --group-name station-stream-builders --policy-name stat
 ```
 **Check:** `aws rds describe-db-clusters` returns `{"DBClusters": []}` instead of AccessDenied.
 
-### L1.1 🔜 Network, cluster, instance and secret (`terraform/database.tf`)
+### L1.1 ❌ Network, cluster, instance and secret (`terraform/database.tf`): blocked by the Free plan
 
 **What & why:**
 - **DB subnet group**: the list of subnets (in 2+ AZs) RDS may place the cluster in.
@@ -1085,6 +1085,51 @@ aws rds describe-db-clusters --db-cluster-identifier station-stream-tf-db \
   --query 'DBClusters[0].{status:Status,engine:EngineVersion,scaling:ServerlessV2ScalingConfiguration,http:HttpEndpointEnabled,encrypted:StorageEncrypted}'
 ```
 
+**What happened on `terraform apply` (after the IAM grant worked: no AccessDenied):** the subnet group, DB security group + ingress rule, `random_password` and the secret were created (6 of 8, all free except the secret at $0.40/month). The cluster failed:
+```
+Error: creating RDS Cluster (station-stream-tf-db): operation error RDS: CreateDBCluster, https response error
+StatusCode: 400, api error FreeTierRestrictionError: To use Aurora clusters with free plan accounts you need to set
+WithExpressConfiguration.  To remove all limitations, upgrade your account plan.
+```
+**Diagnosis:** not IAM (the policy worked) and not a Terraform mistake: it is an **account-plan restriction**. On an AWS *Free plan* account, Aurora can only be created with *express configuration*, where AWS chooses every setting itself. Checked three ways: `aws rds create-db-cluster help` (the flag exists and takes only an identifier + engine), `terraform providers schema` (provider 6.68.0 has **no** attribute for it, so Terraform cannot create one), and AWS docs: express clusters (a) cannot be placed in a VPC, so no private subnets or security-group rules, (b) are reached through an always-on **internet access gateway**, (c) allow **IAM authentication only**: no Secrets Manager password, no `api_reader` password login, (d) can't pick an engine version, (e) cap at 4 ACU / 1 GB on the free tier. That would replace the planned design (private DB, SG-to-SG rule, Secrets Manager injection) with a different one.
+**Options on the table:** (A) upgrade the account to a Paid plan (one-way; unused credits carry over), then apply unchanged; (B) express cluster with IAM auth, a new design outside Terraform; (C) skip creating Aurora, keep the tested code, go to L2 on the JSON-backed API.
+**Check the plan type:** console → Billing and Cost Management → account plan banner ("Upgrade plan").
+
+**Second and third errors after the upgrade (each fixed in turn):**
+
+1. `InvalidParameterValue: DatabaseName catalog cannot be used. It is a reserved word for this engine.` `catalog` collides with PostgreSQL's `pg_catalog` system schema. Renamed the initial database to `stationstream` (`var.db_name`).
+2. `KMSKeyNotAccessibleFault: The specified KMS key [null] either doesn't exist, isn't enabled, or isn't accessible by the current user.` The `[null]` is misleading: no custom key was named, so RDS used the AWS-managed defaults. **Diagnosis** with read-only calls as `station-stream-dev`:
+```bash
+aws kms describe-key --key-id alias/aws/rds
+aws kms describe-key --key-id alias/aws/secretsmanager
+# AccessDeniedException ... not authorized to perform: kms:DescribeKey on resource: arn:aws:kms:us-east-1:897744507899:key/106c44e9-...
+# because no identity-based policy allows the kms:DescribeKey action
+```
+Both keys exist (their ARNs are in the errors); the *caller* may not use them. Aurora encrypts storage with `aws/rds`, and the RDS-managed admin password is stored with `aws/secretsmanager`. **Fix (owner's clicks):** two statements in [builder-iam-scoped.json](../infra/iam/builder-iam-scoped.json): `kms:DescribeKey` on exactly those two key ARNs, and `kms:CreateGrant` on them only when the call comes *via* `rds` or `secretsmanager` (a grant is how a service gets to use your key on your behalf). Nothing else on KMS: no `Decrypt`, no custom keys.
+
+3. After the KMS grant worked (`describe-key` now returns `Enabled`), the next gate, as predicted: `AccessDenied: The user isn't authorized to create a secret in AWS Secrets Manager. Either grant the user permission to create a secret, or create the secret with a different user that has permission.` **Diagnosis:** with `manage_master_user_password = true`, RDS creates the admin-password secret **using the caller's permissions**, and names it `rds!cluster-<uuid>`, which does not match our `station-stream-*` secrets statement. **Fix (owner's clicks):** statement `CreateRdsManagedMasterSecret`: only `secretsmanager:CreateSecret` + `TagResource`, only on `secret:rds!cluster-*`. No read access to that secret for the dev user: the password stays unreadable to us.
+
+4. ❌ **Same error after the owner saved the policy.** Diagnosed without guessing:
+   - **AWS docs** (Aurora User Guide, "Permissions required for Secrets Manager integration") list exactly `kms:DescribeKey`, `secretsmanager:CreateSecret`, `secretsmanager:TagResource`, which the policy file has.
+   - **CloudTrail** shows what RDS did on our behalf. The call is made *as the user*, through a forward access session (`invokedBy: rds.amazonaws.com`):
+     ```bash
+     aws cloudtrail lookup-events --lookup-attributes AttributeKey=EventName,AttributeValue=CreateSecret --max-results 5 \
+       --query 'Events[].CloudTrailEvent' --output text
+     # "invokedBy":"rds.amazonaws.com" ... "errorCode":"AccessDenied" ... not authorized to perform: secretsmanager:CreateSecret
+     #   on resource: rds!cluster-87632d40-9915-4b24-9120-15403505b1e8   (eventTime 05:03:16Z, after the save at ~05:02)
+     ```
+   - **Probe:** is the new statement live? Tagging a secret that doesn't exist returns *ResourceNotFound* if IAM allows it, *AccessDenied* if not:
+     ```bash
+     aws secretsmanager tag-resource --secret-id 'station-stream-tf/probe-does-not-exist' --tags Key=probe,Value=1  # ResourceNotFoundException (allowed)
+     aws secretsmanager tag-resource --secret-id 'rds!cluster-probe-does-not-exist'     --tags Key=probe,Value=1  # AccessDeniedException (not allowed)
+     ```
+   - **Size check:** 3,386 non-whitespace characters, under the 5,120 limit for a group's inline policies.
+   - **Conclusion:** the saved group policy doesn't contain `CreateRdsManagedMasterSecret`. Next: the owner checks the live JSON in the console.
+
+5. ✅ **Fixed.** The owner re-pasted the policy; the probe flipped from *AccessDenied* to *ResourceNotFound* (statement live), then the apply went through. **Cluster created in 33 s**; the writer instance is the slow part. Lesson: when "I saved it" and the error persists, prove what's live with a harmless probe before re-running a slow apply.
+
+**Result (console: RDS → Databases → `station-stream-tf-db`):** cluster *Available*, engine **16.15**, writer `station-stream-tf-db-1` sized **Aurora serverless (0 - 4 ACUs)**, Internet access gateway *Disabled*, Multi-AZ *No* (single writer on purpose), master user `stationadmin` with credentials in `rds!cluster-b62ee170-…` (*Active*, key `aws/secretsmanager`), parameter group `default.aurora-postgresql16`. The console also shows "RDS Extended Support: Enabled": paid support that only starts after a major version's standard support ends (years away for 16.x); the real answer is to upgrade on schedule.
+
 ### L1.2 ✅ Schema and migration (code only, tested locally)
 
 [src/db/schema.sql](../src/db/schema.sql): eight tables (`franchises`, `shows`, `seasons`, `episodes`, `assets`, `stations`, `home_rows`, `home_row_shows`) with text primary keys, foreign keys with `ON DELETE CASCADE`, indexes on the child side of each FK, and JSONB for the asset fields whose shape varies (`availabilities`, `images`, `videos`). [src/db/migrate.js](../src/db/migrate.js) applies the schema, upserts the JSON in one transaction, and creates the read-only role `api_reader`.
@@ -1098,6 +1143,66 @@ aws rds describe-db-clusters --db-cluster-identifier station-stream-tf-db \
 **Local failure tests:** (1) database stopped mid-run: requests kept being served, `/health` stayed HTTP 200; (2) database down at boot: served the bundled JSON, `/health` showed `"catalogLastError":"ECONNREFUSED"`; (3) database back: next refresh flipped `catalogSource` to `aurora` with no restart.
 
 **Bug found by the test:** a refused connection in Node arrives as an `AggregateError` with an **empty `message`**, so the first version logged `"error":""` and `/health` hid it (empty string is falsy). Fix: fall back to `err.code`. Interview point: test the failure path, not just the happy path.
+
+### L1.4 ✅ Least privilege: secrets, roles, and the read-only database user
+
+**What & why:** two execution roles, two secrets, two database users, so each piece can only reach what it needs.
+- The API's execution role (`station-stream-tf-task-exec`) gets an inline policy `read-api-reader-secret`: `secretsmanager:GetSecretValue` on **only** `station-stream-tf/db/api-reader`. ECS reads it at task start and sets `PGPASSWORD`; the env also has `PGHOST` (cluster endpoint), `PGDATABASE=stationstream`, `PGUSER=api_reader`.
+- A separate role `station-stream-tf-migrate-exec` is the **only** one that can read the RDS-managed admin secret (plus the api-reader one, to set that user's password).
+- Secret values are injected with `valueFrom = "<secret ARN>:password::"` (pick one JSON key).
+- `depends_on` the IAM policy on both task definitions: otherwise a new task can start before its role may read the secret (a race that fails as `AccessDenied` on task start).
+
+```bash
+terraform plan -out=tfplan && terraform apply tfplan   # Plan: 6 to add, 1 to change, 1 to destroy (old task-def revision)
+```
+**Check:**
+```bash
+aws iam get-role-policy --role-name station-stream-tf-task-exec --policy-name read-api-reader-secret --query PolicyDocument.Statement
+aws ecs describe-task-definition --task-definition station-stream-tf --query 'taskDefinition.containerDefinitions[0].secrets'
+```
+
+### L1.3 ✅ Migrate + seed as a one-off ECS task
+
+**What & why:** the database is private, so the laptop can't reach it. The migration runs *inside* the VPC as a Fargate task, with the same image and a different command (`node src/db/migrate.js`), wearing the task security group (the only one the DB accepts). Real-world pattern: run migrations as a task before deploying code that needs them.
+```bash
+REG=897744507899.dkr.ecr.us-east-1.amazonaws.com    # image first: copy GitHub Actions' build into app 2's repo
+aws ecr get-login-password | docker login -u AWS --password-stdin $REG
+docker pull --platform linux/arm64 $REG/station-stream:4935121
+docker tag $REG/station-stream:4935121 $REG/station-stream-tf:4935121 && docker push $REG/station-stream-tf:4935121
+
+cd terraform
+eval "$(terraform output -raw migrate_command)"     # aws ecs run-task ... --task-definition station-stream-tf-migrate
+aws ecs wait tasks-stopped --cluster station-stream-tf --tasks <task-arn>
+aws logs get-log-events --log-group-name /ecs/station-stream-tf --log-stream-name migrate/migrate/<task-id>
+```
+**Console:** ECS → Clusters → station-stream-tf → Tasks → Run new task → Launch type Fargate → Family `station-stream-tf-migrate` → Networking: default VPC, subnets 1a/1b, security group `station-stream-tf-task`, public IP on → Create.
+**Result:** exit code `0` on the first try, `"migration complete","counts":{"franchises":2,"shows":4,"seasons":4,"episodes":8,"assets":8,"stations":2,"home_rows":4,"home_row_shows":7}`, same as the local test.
+
+### L1.5–L1.7 ✅ API on Aurora, live
+
+Rollout to task definition with image `4935121` → `COMPLETED`. Then:
+```bash
+curl -s https://d1436kyrcdypmk.cloudfront.net/health
+# {"status":"ok","version":"4935121","uptimeSeconds":143,"stations":2,"catalogSource":"aurora","catalogAgeSeconds":141}
+# one GraphQL request later (copy older than 60 s -> background refresh):
+# {"status":"ok",...,"catalogSource":"aurora","catalogAgeSeconds":3}
+```
+Firebase site https://station-stream-2026.web.app loaded the North station (all 8 episodes, no console errors). Likes still work: toggled off and on, reload showed it liked (Cloud Run function → Atlas, independent of Aurora).
+
+### L1.8 ❌→🔜 Console Query Editor (Data API)
+
+**What & why:** the Query Editor runs SQL from the browser through the **Data API** (HTTPS to RDS, enabled by `enable_http_endpoint = true`), so no network path to the private DB is needed. It logs in with a Secrets Manager secret; we use the **`api_reader`** secret, so the console runs SQL as the read-only user and nobody reads the admin password.
+
+**Errors:** the console showed "Your account doesn't have access to AWS Secrets Manager … to create a secret that is used by the query editor". The CLI version of the same query gave the precise reasons:
+```bash
+aws rds-data execute-statement --resource-arn arn:aws:rds:us-east-1:897744507899:cluster:station-stream-tf-db \
+  --secret-arn arn:aws:secretsmanager:us-east-1:897744507899:secret:station-stream-tf/db/api-reader-IiQeOW \
+  --database stationstream --sql "SELECT count(*) FROM episodes"
+# AccessDeniedException: ... not authorized to perform: rds-data:ExecuteStatement on resource: ...cluster:station-stream-tf-db
+aws secretsmanager list-secrets
+# AccessDeniedException: ... not authorized to perform: secretsmanager:ListSecrets
+```
+**Fix (owner's clicks):** `QueryEditorDataApi` (the five `rds-data:*` statement/transaction actions, only on `cluster:station-stream-*`) and `ListSecretNamesForQueryEditor` (`secretsmanager:ListSecrets` on `*`: it can't be scoped, and it returns names and metadata, never values). `GetSecretValue` on the api-reader secret was already allowed by `ManageStationStreamSecrets`.
 
 ---
 

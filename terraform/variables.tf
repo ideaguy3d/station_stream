@@ -12,7 +12,7 @@ variable "region" {
 variable "image_tag" {
   description = "Which image (git commit) the service runs."
   type        = string
-  default     = "461037e"
+  default     = "4935121" # L1: pg + migration + Aurora-backed catalog
 }
 
 variable "alert_email" {

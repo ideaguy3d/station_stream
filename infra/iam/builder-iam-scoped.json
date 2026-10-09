@@ -118,6 +118,65 @@
         "secretsmanager:GetResourcePolicy"
       ],
       "Resource": "arn:aws:secretsmanager:us-east-1:897744507899:secret:station-stream-*"
+    },
+    {
+      "Sid": "DescribeAwsManagedKeysForAurora",
+      "Effect": "Allow",
+      "Action": [
+        "kms:DescribeKey"
+      ],
+      "Resource": [
+        "arn:aws:kms:us-east-1:897744507899:key/106c44e9-d895-445d-ba01-fa2d01c3b52e",
+        "arn:aws:kms:us-east-1:897744507899:key/4a4daae0-5efb-4c15-bd9e-e255230ce2cf"
+      ]
+    },
+    {
+      "Sid": "DelegateAwsManagedKeysToRdsAndSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "kms:CreateGrant"
+      ],
+      "Resource": [
+        "arn:aws:kms:us-east-1:897744507899:key/106c44e9-d895-445d-ba01-fa2d01c3b52e",
+        "arn:aws:kms:us-east-1:897744507899:key/4a4daae0-5efb-4c15-bd9e-e255230ce2cf"
+      ],
+      "Condition": {
+        "StringEquals": {
+          "kms:ViaService": [
+            "rds.us-east-1.amazonaws.com",
+            "secretsmanager.us-east-1.amazonaws.com"
+          ]
+        }
+      }
+    },
+    {
+      "Sid": "CreateRdsManagedMasterSecret",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:TagResource"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:897744507899:secret:rds!cluster-*"
+    },
+    {
+      "Sid": "QueryEditorDataApi",
+      "Effect": "Allow",
+      "Action": [
+        "rds-data:ExecuteStatement",
+        "rds-data:BatchExecuteStatement",
+        "rds-data:BeginTransaction",
+        "rds-data:CommitTransaction",
+        "rds-data:RollbackTransaction"
+      ],
+      "Resource": "arn:aws:rds:us-east-1:897744507899:cluster:station-stream-*"
+    },
+    {
+      "Sid": "ListSecretNamesForQueryEditor",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:ListSecrets"
+      ],
+      "Resource": "*"
     }
   ]
 }
