@@ -1,5 +1,7 @@
 # Handoff: where we are and what's next
 
+> **Next work: [PLAN-L1-L2.md](PLAN-L1-L2.md)** (Aurora Serverless v2 catalog + traffic-spike test), agreed 2026-10-08.
+
 > **New Claude session: read this first**, then [CLAUDE.md](../CLAUDE.md) (working rules), [STUDY_GUIDE.md](STUDY_GUIDE.md) (beginner explanations), and [aws-breadcrumbs.md](aws-breadcrumbs.md) (every AWS step, error and fix, in order). Don't re-derive what's below; build on it.
 
 Last updated: 2026-10-07, ~23:30 PT, end of the first (very long) session. GCP plan revised to v2 (frontend on GCP, backend on AWS).
