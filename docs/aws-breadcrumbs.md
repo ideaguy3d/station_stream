@@ -1234,7 +1234,7 @@ aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name Serverles
 
 ---
 
-## Phase L2 🔜: Traffic spike, autoscaling, capacity planning (app 2)
+## Phase L2 ✅: Traffic spike, autoscaling, capacity planning (app 2)
 
 > Plan: [PLAN-L1-L2.md](PLAN-L1-L2.md) (runs 1–3; optional run 4 skipped for time). Load script: [loadtest/spike.js](../loadtest/spike.js) (k6). Metrics helper: [loadtest/metrics.sh](../loadtest/metrics.sh). Raw outputs: `loadtest/results/`. Only our own endpoint is ever hit: `https://d1436kyrcdypmk.cloudfront.net` → app 2.
 
@@ -1315,6 +1315,94 @@ terraform plan -out=tfplan && terraform apply tfplan   # 1 to add, 2 to change, 
 ```
 **Console:** ECS → Clusters → station-stream-tf → api → Service auto scaling → Min 1 / Max 6, Policies (2): `requests-per-task: Tracking ALBRequestCountPerTarget at 15000`, `cpu60`.
 **Check:** `aws application-autoscaling describe-scaling-policies --service-namespace ecs --query 'ScalingPolicies[].[PolicyName,TargetTrackingScalingPolicyConfiguration.TargetValue,TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown]'`
+
+### L2.4 ❌→✅ Run 3: same spike, tuned config (max 6, requests-per-task 15,000, scale-out cooldown 60 s)
+
+**Reset first:** after run 2 the service sat at 2 tasks. Natural scale-in needs **both** policies' low alarms to see 15 one-minute datapoints, and the new policy's alarms had just been created, so it would take ~15 min. Reset by hand:
+```bash
+aws ecs update-service --cluster station-stream-tf --service api --desired-count 1   # only the desired count
+```
+Not via the console's *Update service* form: that form also re-submits the **autoscaling policies**, which Terraform owns, so saving it risks silent drift. `terraform plan` afterwards → *No changes* (`desired_count` is in `ignore_changes`).
+
+**Hypothesis:** requests-per-target reacts before CPU, so the second task arrives ~2–3 min after the spike starts instead of ~5.5.
+
+**k6:** 105,032 requests, **3 failed (0.003%)**, Home p95 **136 ms**, p99 187 ms, max 614 ms. Thresholds ✓.
+```
+time(UTC)  cpuavg  cpumax healthy    reqs   reqpt      rt    t5xx    e5xx     acu
+06:40         0.0     0.1     1.0    87.0    85.5       2       -       -     0.5
+06:41         2.0     5.4     1.0   603.0   603.0       2       -       -     0.5
+06:42         4.9     5.3     1.0  1027.0  1027.0       2       -       -     0.5
+06:43        52.6    82.8     1.0 15682.0 15682.0       9       -       -     0.5
+06:44        73.7    76.3     1.0 17677.0 17677.0       6       -     2.0     0.5
+06:45        72.6    73.4     1.0 17772.0 17772.0       4       -       -     1.0
+06:46        73.3    74.1     1.0 17764.0 17764.0       4       -     1.0     0.5
+06:47        71.3    72.3     1.0 17690.0 17690.0       4       -       -     0.5
+06:48        38.5    68.8     2.0 10901.0 10035.0       3       -       -     0.5
+06:49         3.0     4.8     2.0   596.0   298.0       1       -       -     0.5
+06:50         5.1    21.2     3.0   585.0   252.0       2       -       -     0.5
+06:51         2.4     4.3     3.0   587.0   195.7       2       -       -     0.5
+06:52         2.3     4.8     3.0   607.0   202.3       2       -       -     0.5
+06:53         2.5     3.6     3.0   609.0   203.0       2       -       -     0.5
+06:54         2.7     6.2     3.0   606.0   202.0       2       -       -     0.5
+06:55         2.1     2.8     3.0   607.0   202.3       2       -       -     0.5
+06:56         2.1     3.3     3.0   607.0   202.3       2       -       -     0.5
+06:57         2.0     2.8     3.0   598.0   199.3       2       -       -     0.5
+```
+**Timeline and decisions:**
+```
+06:42:50  spike starts (300 VUs)
+06:48:06  "Setting desired count to 2." cause: AlarmHigh ... triggered policy requests-per-task
+06:48:41  2 running                         (spike ended 06:48:50)
+06:50:06  "Setting desired count to 3." cause: the SAME AlarmHigh, requests-per-task   <- after traffic had dropped
+06:50:46  3 running
+```
+**Diagnosis 1, not faster:** both target-tracking policies create the same kind of alarm:
+```bash
+aws cloudwatch describe-alarms --alarm-name-prefix TargetTracking-service/station-stream-tf/api \
+  --query 'MetricAlarms[].[MetricName,Period,EvaluationPeriods,Threshold,ComparisonOperator]' --output text
+# CPUUtilization        60  3  60.0     GreaterThanThreshold   (AlarmHigh)
+# RequestCountPerTarget 60  3  15000.0  GreaterThanThreshold   (AlarmHigh)
+# RequestCountPerTarget 60 15  13500.0  LessThanThreshold      (AlarmLow: 15 minutes below 90% of target)
+# CPUUtilization        60 15  54.0     LessThanThreshold      (AlarmLow)
+```
+3 × 60 s above target + ~1–2 min metric delay + ~40 s task start ≈ 5 min, **whatever the metric**. Requests only lead CPU when work is slow (I/O, database); with the cache, CPU rises in the same minute as traffic. **Hypothesis wrong; lesson: reactive scaling has a ~5-minute floor here.**
+
+**Diagnosis 2, the extra task:** the 60 s cooldown ended at 06:49:06 while the alarm still held the spike's last full minute (~17,700 req/task, measured when only **1** task served). Target tracking computed `ceil(2 tasks × 17,700 / 15,000) = 3`. Stale datapoint × new capacity = **overshoot**. The cooldown must exceed metric delay + task start. **Fix:** scale-out cooldown 60 → **180 s** (both policies, [monitoring.tf](../terraform/monitoring.tf)).
+
+**Diagnosis 3, the 3 failures:** all were load-balancer **502**s (06:44 ×2, 06:46 ×1), none 503/504/500:
+```bash
+for m in HTTPCode_ELB_502_Count HTTPCode_ELB_503_Count HTTPCode_ELB_504_Count; do
+  aws cloudwatch get-metric-statistics --namespace AWS/ApplicationELB --metric-name $m --dimensions Name=LoadBalancer,Value=<alb suffix> \
+    --start-time 2026-10-09T06:40:00Z --end-time 2026-10-09T07:00:00Z --period 60 --statistics Sum; done
+aws elbv2 describe-load-balancer-attributes --load-balancer-arn <alb arn> --query 'Attributes[?Key==`idle_timeout.timeout_seconds`]'   # 60
+```
+The ALB keeps idle connections to targets for **60 s**; Node closes idle keep-alive connections after **5 s** (default). Under churn, the ALB occasionally sends a request on a connection Node is closing at that moment, and returns 502. **Fix** ([src/server.js](../src/server.js)): `keepAliveTimeout = 65 s` (> ALB's 60) and `headersTimeout = 66 s`, so the load balancer always closes first. Locally the server now answers `keep-alive: timeout=65`.
+
+**Natural scale-in (measured after run 3):**
+```
+06:48:50  spike ends
+07:06:36  "Setting desired count to 2."  cause: AlarmLow (requests-per-task), 15 low minutes
+07:12:36  "Setting desired count to 1."  after the 300 s scale-in cooldown
+```
+About **24 minutes** from the end of the spike back to 1 task, one step at a time: slow on purpose (cheap insurance against a second wave).
+
+**Fixes shipped** (after scale-in, so recreating alarms didn't reset the measurement):
+```bash
+# image f3ac32c (keep-alive fix) copied station-stream -> station-stream-tf, var.image_tag bumped; cooldowns 60 -> 180 s
+terraform plan -out=tfplan && terraform apply tfplan     # 2 to add, 3 to change, 2 to destroy (task-def revisions)
+curl -s https://d1436kyrcdypmk.cloudfront.net/health     # {"status":"ok","version":"f3ac32c",...,"catalogSource":"aurora",...}
+terraform plan                                           # No changes
+```
+The `Keep-Alive: timeout=65` header is not visible through the ALB (it's a hop-by-hop header the load balancer doesn't forward). It was verified directly against the server.
+
+### L2.5 📐 Capacity planning (the number to quote)
+
+**One 0.25 vCPU ARM Fargate task ≈ 300 req/s at ~65–73% CPU, p95 ~125–135 ms end-to-end (2–9 ms at the ALB).** Plan with **~250 req/s per task** (≈55% CPU). For a peak of P req/s: **tasks = ⌈P / 250⌉ + 30–50% headroom**, min 2 in production for AZ redundancy. Example: a 1,000 req/s premiere → ⌈1000/250⌉ = 4, + 50% → **6 tasks**, which is today's cap.
+
+Because reactive scaling needs ~5 min here, a spike shorter than that is served by **whatever is already running**. So:
+- **Known events** (pledge drives, premieres, election night): **scheduled scaling** (`aws_appautoscaling_scheduled_action`) raises the minimum before the event.
+- **Unknown spikes:** keep headroom (min 2, ~55% target); caching is the cheapest capacity (it's why 1 task took a 30× spike).
+- Faster reaction would need step scaling on 1-of-1 high-resolution alarms, at the cost of flapping.
 
 ---
 

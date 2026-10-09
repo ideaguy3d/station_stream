@@ -14,6 +14,7 @@ This guide is for rebuilding app 1 **by yourself** and being able to explain eve
 5. [Self-test: 20 interview questions](#5-self-test-20-interview-questions)
 6. [Job requirements → where this repo shows them](#6-job-requirements--where-this-repo-shows-them)
 7. [Aurora Serverless v2: the catalog database (app 2)](#7-aurora-serverless-v2-the-catalog-database-app-2)
+8. [Load testing, autoscaling and capacity planning (app 2)](#8-load-testing-autoscaling-and-capacity-planning-app-2)
 
 ---
 
@@ -671,4 +672,37 @@ Built in L1 with Terraform ([terraform/database.tf](../terraform/database.tf)); 
 - **ORM (Prisma):** a schema file generates a typed client and migration files. Good for big teams and fast schema change. We used plain SQL with `pg` because 8 tables and one read path didn't justify it.
 - **Data API:** SQL over HTTPS with IAM + a secret, no network path or driver needed. Handy for the console and for Lambda. Our API uses a normal `pg` connection.
 - **Production differences:** a reader in a second AZ, `deletion_protection = true`, a final snapshot, longer backups, TLS with CA verification (`verify-full` with the RDS CA bundle), and a minimum capacity above 0 if the ~15 s resume is unacceptable.
+
+---
+
+## 8. Load testing, autoscaling and capacity planning (app 2)
+
+Done in L2 with **k6** ([loadtest/spike.js](../loadtest/spike.js)); numbers and commands in breadcrumbs Phase L2.
+
+### The experiment
+
+Each k6 **virtual user (VU)** acts like a viewer: the same GraphQL `Home` query the page sends, then a 1-second pause, so 300 VUs ≈ 300 req/s. **Thresholds** make a run pass or fail (under 1% errors, p95 under 800 ms). Three runs:
+
+| Run | Config | Result |
+|---|---|---|
+| 1. Baseline, 10 VUs × 5 min | 1 task | 10 req/s, **5% CPU**, p95 117 ms, 0 errors |
+| 2. Spike 10 → 300 VUs in 30 s, hold 5 min | CPU 60%, max 2, cooldowns 300 s | 0 errors, p95 124 ms. **One task carried ~300 req/s at 65% CPU.** Second task arrived ~6 min later, *after* the spike ended |
+| 3. Same spike | + requests-per-task policy, max 6, scale-out cooldown 60 s | 3 × 502 (0.003%), p95 136 ms. Second task again ~5 min late, then a **needless third** after the spike |
+
+### What it taught (the interview stories)
+
+1. **Caching is the cheapest capacity.** The in-memory catalog (L1) costs ~0.5 ms CPU per request, so one 0.25 vCPU task absorbed a 30× spike. The database never noticed either (0.5 ACU throughout).
+2. **Reactive autoscaling has a floor (~5 min here):** target tracking waits for **3 one-minute datapoints** above target, CloudWatch publishes them 1–2 min late, and a task needs ~40 s to start and pass health checks. Swapping CPU for request count didn't help, because with the cache CPU rises in the same minute as traffic. A request-count metric only leads when work is slow (I/O, database calls).
+3. **A short scale-out cooldown overshoots:** after 60 s the alarm still held the last spike minute (measured with 1 task), so target tracking computed `ceil(2 × 17,700 / 15,000) = 3`. The cooldown must exceed metric delay + task start, so we use 180 s. Scale-in stays slow (AlarmLow needs **15** low minutes) so the service doesn't flap.
+4. **Load tests find bugs that unit tests don't:** three **502**s came from a keep-alive mismatch. The ALB keeps idle connections for 60 s, Node closes them after 5 s, and the ALB occasionally reuses a closing one. Fix: `keepAliveTimeout = 65 s` (greater than the ALB's idle timeout).
+5. **Change one owner per resource:** the console's *Update service* form re-submits autoscaling policies that Terraform owns, so a manual reset used the narrow CLI call (`--desired-count 1` only).
+
+### Capacity planning, the formula
+
+**One task ≈ 300 req/s at ~65% CPU; plan ≈ 250 req/s per task.** For a peak of P req/s: `tasks = ⌈P / 250⌉ + 30–50% headroom`, never below 2 in production (two AZs). A 1,000 req/s premiere → 4 + 50% → **6**.
+
+Because reactive scaling is ~5 min late, a short spike is served by whatever is already running:
+- **Known events** (pledge drives, premieres, election night): **scheduled scaling** raises the minimum beforehand. For a station-branded app, the schedule is known.
+- **Unknown spikes:** headroom (min 2, ~55% target) plus caching (in-memory, CDN for cacheable GETs).
+- **What to watch:** ALB `TargetResponseTime`, `HTTPCode_Target_5XX` vs `HTTPCode_ELB_5XX` (app errors vs load balancer: 502 = bad connection, 503 = no healthy targets, 504 = timeout), `RequestCountPerTarget`, ECS `CPUUtilization`, and the autoscaling **activity history**, which names the alarm behind every decision.
 

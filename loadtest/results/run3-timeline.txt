@@ -36,3 +36,34 @@
 06:59:03 desired=3 running=3 pending=0
 06:59:34 desired=3 running=3 pending=0
 07:00:05 desired=3 running=3 pending=0
+07:00:36 desired=3 running=3 pending=0
+07:01:08 desired=3 running=3 pending=0
+07:01:38 desired=3 running=3 pending=0
+07:02:09 desired=3 running=3 pending=0
+07:02:41 desired=3 running=3 pending=0
+07:03:12 desired=3 running=3 pending=0
+07:03:43 desired=3 running=3 pending=0
+07:04:14 desired=3 running=3 pending=0
+07:04:45 desired=3 running=3 pending=0
+07:05:16 desired=3 running=3 pending=0
+07:05:47 desired=3 running=3 pending=0
+07:06:18 desired=3 running=3 pending=0
+07:06:49 desired=2 running=2 pending=0
+07:07:20 desired=2 running=2 pending=0
+07:07:51 desired=2 running=2 pending=0
+07:08:22 desired=2 running=2 pending=0
+07:08:53 desired=2 running=2 pending=0
+07:09:25 desired=2 running=2 pending=0
+07:09:56 desired=2 running=2 pending=0
+07:10:27 desired=2 running=2 pending=0
+07:10:58 desired=2 running=2 pending=0
+07:11:29 desired=2 running=2 pending=0
+07:12:00 desired=2 running=2 pending=0
+07:12:31 desired=2 running=2 pending=0
+07:13:02 desired=1 running=1 pending=0
+--- scaling activities
+2026-10-09T00:12:36.616000-07:00	InProgress	Setting desired count to 1.	monitor alarm TargetTracking-service/station-stream-tf/api-AlarmLow-5edac1cc-3590-41f8-bff8-8a1a6a56a08b in state ALARM triggered policy requests-per-task
+2026-10-09T00:06:36.618000-07:00	Successful	Setting desired count to 2.	monitor alarm TargetTracking-service/station-stream-tf/api-AlarmLow-5edac1cc-3590-41f8-bff8-8a1a6a56a08b in state ALARM triggered policy requests-per-task
+2026-10-08T23:50:06.780000-07:00	Successful	Setting desired count to 3.	monitor alarm TargetTracking-service/station-stream-tf/api-AlarmHigh-1ba5d561-bbc5-4389-90cf-e96b81dbbd68 in state ALARM triggered policy requests-per-task
+2026-10-08T23:48:06.795000-07:00	Successful	Setting desired count to 2.	monitor alarm TargetTracking-service/station-stream-tf/api-AlarmHigh-1ba5d561-bbc5-4389-90cf-e96b81dbbd68 in state ALARM triggered policy requests-per-task
+2026-10-08T23:27:18.258000-07:00	Successful	Setting desired count to 2.	monitor alarm TargetTracking-service/station-stream-tf/api-AlarmHigh-7c1c8ee2-553a-4b80-8555-8c3d204ba3da in state ALARM triggered policy cpu60

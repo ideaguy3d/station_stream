@@ -1,6 +1,6 @@
 # Handoff: where we are and what's next
 
-> **Next work: [PLAN-L1-L2.md](PLAN-L1-L2.md).** L1 (Aurora Serverless v2 catalog) **done 2026-10-08**; L2 (traffic-spike test) is next and waits for the owner's "go".
+> **[PLAN-L1-L2.md](PLAN-L1-L2.md) done 2026-10-09.** L1: catalog in Aurora Serverless v2. L2: spike test (runs 1–3; run 4 skipped for time), see [STUDY_GUIDE.md §8](STUDY_GUIDE.md#8-load-testing-autoscaling-and-capacity-planning-app-2). Capacity: **one 0.25 vCPU task ≈ 300 req/s at ~65% CPU; plan 250 req/s per task**. App 2 autoscaling is now 1–6 tasks, CPU 60% + `ALBRequestCountPerTarget` 15,000/min, scale-out cooldown 180 s, scale-in 300 s. Image `f3ac32c` (Node keep-alive 65 s > ALB idle 60 s, fixes rare 502s).
 
 > **New Claude session: read this first**, then [CLAUDE.md](../CLAUDE.md) (working rules), [STUDY_GUIDE.md](STUDY_GUIDE.md) (beginner explanations), and [aws-breadcrumbs.md](aws-breadcrumbs.md) (every AWS step, error and fix, in order). Don't re-derive what's below; build on it.
 

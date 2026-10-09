@@ -90,9 +90,12 @@ resource "aws_appautoscaling_policy" "cpu60" {
   scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
 
   target_tracking_scaling_policy_configuration {
-    target_value       = 60
-    scale_in_cooldown  = 300 # slow in: don't flap after a spike
-    scale_out_cooldown = 60  # fast out: was 300, which left a spike under-served for 5+ minutes
+    target_value      = 60
+    scale_in_cooldown = 300 # slow in: don't flap after a spike
+    # 180, not 60: L2 run 3 showed that after a 60 s cooldown the alarm still held the spike's last
+    # (stale, 1-task) datapoint, so ceil(2 tasks x 17,700 / 15,000) = 3: a needless extra task.
+    # The cooldown must exceed metric delay (~1-2 min) + task start (~1 min).
+    scale_out_cooldown = 180
     predefined_metric_specification {
       predefined_metric_type = "ECSServiceAverageCPUUtilization"
     }
@@ -111,7 +114,7 @@ resource "aws_appautoscaling_policy" "requests_per_task" {
   target_tracking_scaling_policy_configuration {
     target_value       = var.api_requests_per_task_target
     scale_in_cooldown  = 300
-    scale_out_cooldown = 60
+    scale_out_cooldown = 180 # see cpu60 above
     predefined_metric_specification {
       predefined_metric_type = "ALBRequestCountPerTarget"
       # "app/<alb>/<id>/targetgroup/<tg>/<id>": which load balancer + target group to count
