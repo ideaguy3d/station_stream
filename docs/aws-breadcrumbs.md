@@ -1189,7 +1189,7 @@ curl -s https://d1436kyrcdypmk.cloudfront.net/health
 ```
 Firebase site https://station-stream-2026.web.app loaded the North station (all 8 episodes, no console errors). Likes still work: toggled off and on, reload showed it liked (Cloud Run function → Atlas, independent of Aurora).
 
-### L1.8 ❌→🔜 Console Query Editor (Data API)
+### L1.8 ❌→✅ Console Query Editor (Data API)
 
 **What & why:** the Query Editor runs SQL from the browser through the **Data API** (HTTPS to RDS, enabled by `enable_http_endpoint = true`), so no network path to the private DB is needed. It logs in with a Secrets Manager secret; we use the **`api_reader`** secret, so the console runs SQL as the read-only user and nobody reads the admin password.
 
@@ -1203,6 +1203,13 @@ aws secretsmanager list-secrets
 # AccessDeniedException: ... not authorized to perform: secretsmanager:ListSecrets
 ```
 **Fix (owner's clicks):** `QueryEditorDataApi` (the five `rds-data:*` statement/transaction actions, only on `cluster:station-stream-*`) and `ListSecretNamesForQueryEditor` (`secretsmanager:ListSecrets` on `*`: it can't be scoped, and it returns names and metadata, never values). `GetSecretValue` on the api-reader secret was already allowed by `ManageStationStreamSecrets`.
+
+**After the grant:** the CLI query returned `[[{"longValue":8}]]` and `list-secrets` showed `station-stream-tf/db/api-reader` and `rds!cluster-b62ee170-…`. Console: RDS → Query editor → Database `station-stream-tf-db` → Username **Connect with a Secrets Manager ARN** → the api-reader secret's ARN → database `stationstream` → Connect → "Connected to database station-stream-tf-db successfully".
+```sql
+SELECT current_user, (SELECT count(*) FROM stations) AS stations, (SELECT count(*) FROM shows) AS shows, (SELECT count(*) FROM episodes) AS episodes;
+-- api_reader | 2 | 4 | 8
+```
+`terraform plan` afterwards → *No changes*.
 
 ---
 

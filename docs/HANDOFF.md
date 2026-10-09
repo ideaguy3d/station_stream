@@ -1,6 +1,6 @@
 # Handoff: where we are and what's next
 
-> **Next work: [PLAN-L1-L2.md](PLAN-L1-L2.md)** (Aurora Serverless v2 catalog + traffic-spike test), agreed 2026-10-08.
+> **Next work: [PLAN-L1-L2.md](PLAN-L1-L2.md).** L1 (Aurora Serverless v2 catalog) **done 2026-10-08**; L2 (traffic-spike test) is next and waits for the owner's "go".
 
 > **New Claude session: read this first**, then [CLAUDE.md](../CLAUDE.md) (working rules), [STUDY_GUIDE.md](STUDY_GUIDE.md) (beginner explanations), and [aws-breadcrumbs.md](aws-breadcrumbs.md) (every AWS step, error and fix, in order). Don't re-derive what's below; build on it.
 
@@ -21,7 +21,8 @@ Last updated: 2026-10-07, ~23:30 PT, end of the first (very long) session. GCP p
 | Video CDN | `d22r43ct06qav3.cloudfront.net` | `d990usezj0kzv.cloudfront.net` |
 | Deploys | GitHub Actions on push to `main`, OIDC role `station-stream-github-deploy` ([deploy.yml](../.github/workflows/deploy.yml)) | `terraform apply` |
 | Alerts | 4 CloudWatch alarms → SNS email (confirmed) | same, `station-stream-tf-*` |
-| Cost | ~$0.05/hr | ~$0.05/hr |
+| Database | none (bundled JSON catalog) | **Aurora PostgreSQL Serverless v2** `station-stream-tf-db` (16.15, 0–4 ACU, auto-pause 300 s, private); API reads as `api_reader` |
+| Cost | ~$0.05/hr | ~$0.05/hr + Aurora (~$0 paused, ~$0.06/h at 0.5 ACU) + 2 secrets ($0.80/month) |
 | Remove with | Teardown section of aws-breadcrumbs.md | `cd terraform && terraform destroy` |
 
 AWS basics: account `897744507899`, region `us-east-1`, CLI profile `station-stream` (IAM user `station-stream-dev`, scoped policy [infra/iam/builder-iam-scoped.json](../infra/iam/builder-iam-scoped.json)). Always `export AWS_PROFILE=station-stream AWS_REGION=us-east-1`.
@@ -29,7 +30,9 @@ AWS basics: account `897744507899`, region `us-east-1`, CLI profile `station-str
 **Phases done:** 0–9 (setup, API + player, HLS, Docker, ECR, ECS + ALB, S3 + CloudFront, monitoring + autoscaling + chaos test, GitHub Actions OIDC, Terraform app 2).
 
 **Not done / known gaps:**
-- **Aurora Serverless + ORM**: deliberately skipped (owner's call). Be ready to *talk* about it: Aurora Serverless v2 scales in ACUs (capacity units), can auto-pause to 0 when idle, PostgreSQL-compatible; an ORM like Prisma maps rows to objects; RDS Proxy pools connections for bursty serverless clients.
+- **Aurora Serverless v2: built in L1 (2026-10-08)** on app 2, see [STUDY_GUIDE.md §7](STUDY_GUIDE.md#7-aurora-serverless-v2-the-catalog-database-app-2) and breadcrumbs Phase L1. No ORM (plain `pg`); be ready to *talk* about Prisma and RDS Proxy.
+- **AWS account is on the Paid plan** since 2026-10-08 (the Free plan only allows Aurora "express configuration"). Unused credits carry over; the $10 budget still alerts.
+- App 2 image is now `4935121` (task definition with `PG*` env + `PGPASSWORD` from Secrets Manager). Migration: `cd terraform && eval "$(terraform output -raw migrate_command)"`.
 - **Phase 10** (teardown script + README "what I learned"): not done. README.md is the original pre-build version.
 - The IAM user can't call `tag:GetResources` (needed for the "find everything by tag" teardown check).
 - Owner's own rebuilds (apps 3 and 4): **after** the interview.

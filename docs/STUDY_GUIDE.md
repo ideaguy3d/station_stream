@@ -13,6 +13,7 @@ This guide is for rebuilding app 1 **by yourself** and being able to explain eve
 4. [The 12 problems we hit and what each teaches](#4-the-12-problems-we-hit-and-what-each-teaches)
 5. [Self-test: 20 interview questions](#5-self-test-20-interview-questions)
 6. [Job requirements → where this repo shows them](#6-job-requirements--where-this-repo-shows-them)
+7. [Aurora Serverless v2: the catalog database (app 2)](#7-aurora-serverless-v2-the-catalog-database-app-2)
 
 ---
 
@@ -609,10 +610,10 @@ Scope first: one station or all, page or video? Check recent deploys (GitHub Act
 |---|---|---|
 | **AWS ECS** | ✅ Fargate ARM64 service behind an ALB, rolling deploys, circuit breaker, self-healing | [taskdef.json](../infra/ecs/taskdef.json), breadcrumbs Phase 5 and §7.5 |
 | **CloudFront / CDN** | ✅ Distribution with OAC to a private S3 bucket, cache and CORS policies, per-file Cache-Control | breadcrumbs Phase 6 |
-| **Aurora Serverless** | ❌ Not yet built. The catalog is JSON files loaded at startup ([src/catalog.js](../src/catalog.js)); the README plans Postgres later. | n/a |
-| **PostgreSQL / MongoDB** | ❌ Not yet built (same as above). The data model is already relational-shaped (Franchise → Show → Season → Episode → Asset). | [data/catalog.json](../data/catalog.json) |
-| **GCP Cloud Functions / Firebase / Cloud Build** | ❌ Not yet built. | n/a |
-| **Terraform** | ❌ Not in app 1 (console-built on purpose, to learn each resource). App 2 is being built with Terraform in `terraform/`. | app 2 |
+| **Aurora Serverless** | ✅ App 2: Aurora PostgreSQL Serverless v2 (0–4 ACU, auto-pause), private, managed admin secret, read-only app user, Terraform | [terraform/database.tf](../terraform/database.tf), breadcrumbs Phase L1, section 7 below |
+| **PostgreSQL / MongoDB** | ✅ Catalog in Postgres (8 tables, FKs, JSONB, migration task); likes in MongoDB Atlas via a Cloud Run function | [src/db/](../src/db/), [gcp-breadcrumbs.md](gcp-breadcrumbs.md) |
+| **GCP Cloud Functions / Firebase / Cloud Build** | ✅ Firebase Hosting UI, Cloud Run function for likes, Cloud Build trigger, uptime check on the AWS API | [gcp/](../gcp/), [gcp-breadcrumbs.md](gcp-breadcrumbs.md) |
+| **Terraform** | ✅ App 2 entirely in Terraform (app 1 console-built on purpose, to learn each resource) | [terraform/](../terraform/) |
 | **GitHub Actions** | ✅ Build → push → deploy → smoke test on push to `main`, OIDC, concurrency lock, native ARM runner | [deploy.yml](../.github/workflows/deploy.yml), breadcrumbs Phase 8 |
 | **Monitoring / alerting** | ✅ 4 CloudWatch alarms → SNS email with recovery notices, JSON request logs, chaos-tested | breadcrumbs §7.1–§7.5, [src/server.js](../src/server.js) |
 | **Autoscaling** | ✅ Target tracking on CPU 60%, 1–2 tasks | breadcrumbs §7.4 |
@@ -623,4 +624,51 @@ Scope first: one station or all, page or video? Check recent deploys (GitHub Act
 | **Multi-tenant (stations)** | ✅ One API, per-station branding and home rows | [data/stations.json](../data/stations.json) |
 | **Cost awareness** | ✅ $10 budget, smallest Fargate size, no NAT, 7-day logs, ECR lifecycle, autoscaling max 2, teardown | breadcrumbs §0.1 and "Teardown" |
 
-**Honest gap sentence for the interview:** "I built and operated the AWS side end to end: ECS, CloudFront, monitoring, autoscaling, OIDC deploys. I haven't yet added Aurora or the GCP pieces. The next step is moving the catalog from JSON into Aurora Serverless Postgres and codifying everything in Terraform."
+**Honest gap sentence for the interview:** "I built and operated both sides: ECS, CloudFront, Aurora Serverless v2 and monitoring on AWS, Firebase, a Cloud Run function and Cloud Build on GCP, with app 2 fully in Terraform. What I haven't done is run it under real production load or with a team; the load test (spike, autoscaling, capacity planning) is my next step."
+
+---
+
+## 7. Aurora Serverless v2: the catalog database (app 2)
+
+Built in L1 with Terraform ([terraform/database.tf](../terraform/database.tf)); every step, error and fix is in breadcrumbs Phase L1.
+
+### What it is, in plain words
+
+- **Aurora** is AWS's own database engine that speaks PostgreSQL (or MySQL). Storage is separate from compute: the data lives in a shared, 6-copy storage layer across 3 AZs, and the "database servers" (instances) attach to it. That's why adding a reader is fast: there is nothing to copy.
+- **Cluster vs instance.** The *cluster* is the storage plus the endpoints (`station-stream-tf-db.cluster-….rds.amazonaws.com` always points at the writer). An *instance* is the compute. We have one **writer**; a **reader** in a second AZ would give read scaling and failover in about 30 s.
+- **Serverless v2** means the instance class is `db.serverless`: capacity scales in **ACUs** (Aurora Capacity Units, roughly 2 GiB RAM plus matching CPU each) in 0.5-ACU steps, within the min/max you set. Ours is **0–4 ACU**.
+- **Auto-pause (0 ACU):** after `seconds_until_auto_pause` (300 s, the minimum) with **no connections**, compute stops and you pay only for storage. The first new connection resumes it in roughly 15 s. Any open connection, even an idle one, keeps it awake.
+- **Cost model:** per ACU-second, plus storage (GB-month) and I/O. Our idle cost is pennies a month.
+
+### How the pieces fit
+
+```
+ Browser ─▶ CloudFront ─▶ ALB ─▶ ECS task "api" ──5432 (SG-to-SG only)──▶ Aurora writer (private)
+                                   │  env PGHOST/PGUSER=api_reader                ▲
+                                   │  PGPASSWORD ◀── Secrets Manager (api-reader)  │
+ One-off ECS task "migrate" ──────────────────────────────────────────────────────┘
+   PGPASSWORD ◀── Secrets Manager (rds!cluster-…, created and rotated by RDS)
+ Console Query Editor ─HTTPS─▶ Data API ─▶ cluster (logs in with the api-reader secret)
+```
+
+- **Private database:** no public access, and its security group allows 5432 **only from the task security group** (a group reference, not an IP range).
+- **Two database users:** the admin (`stationadmin`, password generated by RDS into Secrets Manager with `manage_master_user_password`) is used only by the migration task. The API logs in as **`api_reader`**, which can only `SELECT`. Different ECS execution roles read different secrets.
+- **Migrations as a task:** the same image with a different command (`node src/db/migrate.js`) runs inside the VPC before the code that needs it. It's idempotent: upserts, `CREATE TABLE IF NOT EXISTS`.
+- **Cache-first API:** the catalog changes rarely, so the API keeps it in memory and refreshes it in the background at most once a minute, and only when GraphQL traffic arrives (stale-while-revalidate). Database load doesn't grow with viewers, and with no viewers there are no queries, so Aurora pauses.
+- **Health checks that don't cascade:** `/health` *reports* `catalogSource` and `catalogAgeSeconds` but never queries Aurora. If it did, a database blip would make the load balancer kill every task at once, turning a degraded dependency into a total outage.
+
+### Problems we hit (interview stories)
+
+1. **Free plan restriction**, not IAM: `FreeTierRestrictionError … you need to set WithExpressConfiguration`. Express clusters live outside your VPC behind an internet gateway, with IAM auth only, and Terraform can't create them. The owner upgraded to a Paid plan (unused credits carry over).
+2. **Reserved word:** database name `catalog` is rejected (PostgreSQL's `pg_catalog`).
+3. **KMS:** `KMSKeyNotAccessibleFault … key [null]`. RDS uses AWS-managed keys on your behalf, and the caller still needs `kms:DescribeKey` (and `CreateGrant` via RDS).
+4. **The managed secret:** RDS creates `rds!cluster-…` **using the caller's permissions**. The scoped policy didn't cover that name. The fix seemed not to work until CloudTrail (`invokedBy: rds.amazonaws.com`) and a harmless probe (tag a non-existent secret: *NotFound* = allowed, *AccessDenied* = not) proved the saved policy was missing the statement.
+5. **An empty error message:** in the local failure test, a refused connection in Node arrives as an `AggregateError` with `message: ""`, so the API hid the reason. Fixed by falling back to `err.code`. Test the failure path, not only the happy path.
+
+### Things to be ready to talk about
+
+- **RDS Proxy:** pools and reuses connections for bursty clients (Lambda, many short-lived tasks) and makes failover faster for apps. We don't need it with a few long-lived ECS tasks with small pools. It also only works inside a VPC.
+- **ORM (Prisma):** a schema file generates a typed client and migration files. Good for big teams and fast schema change. We used plain SQL with `pg` because 8 tables and one read path didn't justify it.
+- **Data API:** SQL over HTTPS with IAM + a secret, no network path or driver needed. Handy for the console and for Lambda. Our API uses a normal `pg` connection.
+- **Production differences:** a reader in a second AZ, `deletion_protection = true`, a final snapshot, longer backups, TLS with CA verification (`verify-full` with the RDS CA bundle), and a minimum capacity above 0 if the ~15 s resume is unacceptable.
+
