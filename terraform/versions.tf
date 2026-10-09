@@ -7,6 +7,11 @@ terraform {
       source  = "hashicorp/aws"
       version = "~> 6.0" # any 6.x, never a breaking 7.0
     }
+    # Generates the read-only DB user's password locally (stored in state + Secrets Manager only).
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
+    }
   }
 
   # State stays in a local file (terraform.tfstate, git-ignored).

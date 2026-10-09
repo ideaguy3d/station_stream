@@ -1030,6 +1030,77 @@ aws ecs describe-services --cluster station-stream-tf --services api \
 
 ---
 
+## Phase L1 🔜: Aurora PostgreSQL Serverless v2 holds the catalog (Terraform, app 2)
+
+> Plan: [PLAN-L1-L2.md](PLAN-L1-L2.md). Terraform file: [terraform/database.tf](../terraform/database.tf). Cost: Aurora Serverless v2 bills per ACU-hour (about $0.12 in us-east-1 *(verify)*); **$0 compute while auto-paused**, up to ~$0.48/h at the 4-ACU cap. Two secrets: $0.40/month each.
+
+### L1.0 ❌ What the IAM user can't do yet (the permissions check)
+
+**What & why:** before writing Terraform for a new service, find out what `station-stream-dev` is allowed to do with it. The user only has the policies listed in Phase 0 (ECS, ECR, ELB, VPC, S3, CloudFront, CloudWatch full access + our scoped IAM/SNS statements), so RDS and Secrets Manager were never granted.
+
+**Check (read-only calls, run as `station-stream-dev`):**
+```bash
+export AWS_PROFILE=station-stream AWS_REGION=us-east-1
+aws rds describe-db-clusters
+aws secretsmanager list-secrets
+```
+**Real errors:**
+```
+AccessDenied when calling the DescribeDBClusters operation: User: arn:aws:iam::897744507899:user/station-stream-dev
+is not authorized to perform: rds:DescribeDBClusters on resource: arn:aws:rds:us-east-1:897744507899:cluster:*
+because no identity-based policy allows the rds:DescribeDBClusters action
+
+AccessDeniedException when calling the ListSecrets operation: ... is not authorized to perform:
+secretsmanager:ListSecrets because no identity-based policy allows the secretsmanager:ListSecrets action
+```
+**Diagnosis:** "no identity-based policy allows" means an *implicit deny*: nothing says yes, so the answer is no. It is not an explicit deny and not a service-control policy. The fix is to add an Allow, not to remove a Deny.
+
+**Fix (owner's clicks; permission changes are blocked for Claude):** three new statements in [infra/iam/builder-iam-scoped.json](../infra/iam/builder-iam-scoped.json), same pattern as the SNS one:
+- `RdsReadOnly`: `rds:Describe*` and `rds:ListTagsForResource` on `*` (Describe calls can't be scoped well, and they change nothing).
+- `ManageStationStreamAurora`: create/modify/delete for clusters, instances and subnet groups, only on resources named `station-stream-*`.
+- `ManageStationStreamSecrets`: Secrets Manager actions only on secrets named `station-stream-*`.
+
+Console: IAM → User groups → `station-stream-builders` → Permissions → `station-stream-iam-scoped` → Edit → JSON → paste the file → Next → Save changes.
+```bash
+# the CLI equivalent (what the console does)
+aws iam put-group-policy --group-name station-stream-builders --policy-name station-stream-iam-scoped \
+  --policy-document file://infra/iam/builder-iam-scoped.json
+```
+**Check:** `aws rds describe-db-clusters` returns `{"DBClusters": []}` instead of AccessDenied.
+
+### L1.1 🔜 Network, cluster, instance and secret (`terraform/database.tf`)
+
+**What & why:**
+- **DB subnet group**: the list of subnets (in 2+ AZs) RDS may place the cluster in.
+- **Security group `station-stream-tf-db`**: port 5432 allowed *only from the task security group* (a group reference, not an IP range), so only API tasks can talk to the database.
+- **Aurora cluster** (`aurora-postgresql`, `engine_mode = provisioned`, scaling 0–4 ACU, auto-pause after 300 s) with `manage_master_user_password = true`: RDS creates the admin password and keeps it in Secrets Manager, so it never touches our code or chat. Encrypted storage, Data API on (console Query Editor), not publicly accessible.
+- **One writer instance** of class `db.serverless`. A second instance in another AZ would be the reader that gives fast failover; skipped to keep the bill small.
+- **`random_password` + secret `station-stream-tf/db/api-reader`**: the password for the API's read-only database user.
+
+**CLI:** `cd terraform && terraform plan -out=tfplan && terraform apply tfplan` (plan before IAM grant: *8 to add, 0 to change, 0 to destroy*).
+**Console:** RDS → Create database → Aurora (PostgreSQL-compatible) → Serverless v2 → capacity range 0–4 ACU → Credentials management: *Managed in AWS Secrets Manager* → Connectivity: Public access *No*, existing VPC security group.
+**Check:**
+```bash
+aws rds describe-db-clusters --db-cluster-identifier station-stream-tf-db \
+  --query 'DBClusters[0].{status:Status,engine:EngineVersion,scaling:ServerlessV2ScalingConfiguration,http:HttpEndpointEnabled,encrypted:StorageEncrypted}'
+```
+
+### L1.2 ✅ Schema and migration (code only, tested locally)
+
+[src/db/schema.sql](../src/db/schema.sql): eight tables (`franchises`, `shows`, `seasons`, `episodes`, `assets`, `stations`, `home_rows`, `home_row_shows`) with text primary keys, foreign keys with `ON DELETE CASCADE`, indexes on the child side of each FK, and JSONB for the asset fields whose shape varies (`availabilities`, `images`, `videos`). [src/db/migrate.js](../src/db/migrate.js) applies the schema, upserts the JSON in one transaction, and creates the read-only role `api_reader`.
+
+**Local proof (throwaway `postgres:16-alpine` container, no AWS):** migration run twice gave identical counts (2 franchises, 4 shows, 4 seasons, 8 episodes, 8 assets, 2 stations, 4 rows, 7 row entries); the GraphQL `Home` query for both stations returned **byte-identical JSON** from the JSON-backed and the Postgres-backed API; `api_reader` could `SELECT` but `DELETE FROM shows` gave `permission denied for table shows`.
+
+### L1.5 / L1.6 ✅ API reads from Aurora, cache-first, `/health` independent (code only, tested locally)
+
+[src/catalog.js](../src/catalog.js): the API boots on the bundled JSON, then loads from Aurora in the background; after that every GraphQL request serves from memory and, if the copy is older than 60 s, triggers one background refresh (stale-while-revalidate, single-flight). No GraphQL traffic means no queries, so Aurora can pause. `/health` reports `catalogSource` and `catalogAgeSeconds` but never queries the database.
+
+**Local failure tests:** (1) database stopped mid-run: requests kept being served, `/health` stayed HTTP 200; (2) database down at boot: served the bundled JSON, `/health` showed `"catalogLastError":"ECONNREFUSED"`; (3) database back: next refresh flipped `catalogSource` to `aurora` with no restart.
+
+**Bug found by the test:** a refused connection in Node arrives as an `AggregateError` with an **empty `message`**, so the first version logged `"error":""` and `/health` hid it (empty string is falsy). Fix: fall back to `err.code`. Interview point: test the failure path, not just the happy path.
+
+---
+
 ## Teardown (reverse order of creation)
 
 Dependencies must go first: the service before the cluster, the load balancer before its security group, the task security group before the ALB group it references.

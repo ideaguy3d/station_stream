@@ -20,7 +20,8 @@
     "@as-integrations/express5": "^1.1.2",
     "cors": "^2.8.6",
     "express": "^5.2.1",
-    "graphql": "^16.14.2"
+    "graphql": "^16.14.2",
+    "pg": "^8.23.1"
   },
   "devDependencies": {
     "@tailwindcss/cli": "^4.3.3",

@@ -71,6 +71,53 @@
         "application-autoscaling:ListTagsForResource"
       ],
       "Resource": "arn:aws:application-autoscaling:us-east-1:897744507899:scalable-target/*"
+    },
+    {
+      "Sid": "RdsReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "rds:Describe*",
+        "rds:ListTagsForResource"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageStationStreamAurora",
+      "Effect": "Allow",
+      "Action": [
+        "rds:CreateDBCluster",
+        "rds:ModifyDBCluster",
+        "rds:DeleteDBCluster",
+        "rds:CreateDBInstance",
+        "rds:ModifyDBInstance",
+        "rds:DeleteDBInstance",
+        "rds:CreateDBSubnetGroup",
+        "rds:ModifyDBSubnetGroup",
+        "rds:DeleteDBSubnetGroup",
+        "rds:AddTagsToResource",
+        "rds:RemoveTagsFromResource"
+      ],
+      "Resource": [
+        "arn:aws:rds:us-east-1:897744507899:cluster:station-stream-*",
+        "arn:aws:rds:us-east-1:897744507899:db:station-stream-*",
+        "arn:aws:rds:us-east-1:897744507899:subgrp:station-stream-*"
+      ]
+    },
+    {
+      "Sid": "ManageStationStreamSecrets",
+      "Effect": "Allow",
+      "Action": [
+        "secretsmanager:CreateSecret",
+        "secretsmanager:DescribeSecret",
+        "secretsmanager:GetSecretValue",
+        "secretsmanager:PutSecretValue",
+        "secretsmanager:UpdateSecret",
+        "secretsmanager:DeleteSecret",
+        "secretsmanager:TagResource",
+        "secretsmanager:UntagResource",
+        "secretsmanager:GetResourcePolicy"
+      ],
+      "Resource": "arn:aws:secretsmanager:us-east-1:897744507899:secret:station-stream-*"
     }
   ]
 }

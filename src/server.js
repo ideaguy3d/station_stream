@@ -4,7 +4,8 @@ import cors from 'cors';
 import { ApolloServer } from '@apollo/server';
 import { ApolloServerPluginDrainHttpServer } from '@apollo/server/plugin/drainHttpServer';
 import { expressMiddleware } from '@as-integrations/express5';
-import { loadCatalog } from './catalog.js';
+import { createCatalogStore } from './catalog.js';
+import { createPool, dbConfigured } from './db/pool.js';
 import { typeDefs, makeResolvers } from './schema.js';
 
 const PORT = Number(process.env.PORT ?? 4000);
@@ -17,7 +18,14 @@ const CORS_ORIGINS = (process.env.CORS_ORIGINS ?? '').split(',').map((s) => s.tr
 
 const log = (fields) => console.log(JSON.stringify({ ts: new Date().toISOString(), ...fields }));
 
-const catalog = loadCatalog();
+// CATALOG_CACHE=off makes every GraphQL request query the database (used for load tests).
+const CATALOG_CACHE_OFF = process.env.CATALOG_CACHE === 'off';
+
+// With PGHOST set the catalog comes from Aurora; otherwise from the bundled JSON.
+const pool = dbConfigured() ? createPool() : null;
+const catalog = createCatalogStore({ pool, cacheOff: CATALOG_CACHE_OFF, log });
+catalog.refresh(); // boot on the bundled JSON, then switch to Aurora as soon as it answers
+
 const app = express();
 const httpServer = http.createServer(app);
 
@@ -31,9 +39,19 @@ app.use((req, res, next) => {
   next();
 });
 
-// Load balancer health check. Cheap and dependency-free on purpose.
+// Load balancer health check. Cheap and dependency-free on purpose: it REPORTS the catalog
+// source but never fails because of it. If it queried Aurora, a database blip would mark every
+// task unhealthy at once and turn a degraded dependency into a total outage (cascading failure).
 app.get('/health', (_req, res) => {
-  res.json({ status: 'ok', version: APP_VERSION, uptimeSeconds: Math.round(process.uptime()), stations: catalog.stations.length });
+  res.json({
+    status: 'ok',
+    version: APP_VERSION,
+    uptimeSeconds: Math.round(process.uptime()),
+    stations: catalog.stations.length,
+    catalogSource: catalog.source,
+    catalogAgeSeconds: catalog.ageSeconds,
+    ...(catalog.lastError && { catalogLastError: catalog.lastError }),
+  });
 });
 
 const apollo = new ApolloServer({
@@ -47,8 +65,14 @@ await apollo.start();
 
 // cors() answers the browser's OPTIONS preflight and adds Access-Control-Allow-Origin
 // only for listed origins; maxAge lets the browser skip the preflight for 10 minutes.
-app.use('/graphql', cors({ origin: CORS_ORIGINS, methods: ['GET', 'POST'], maxAge: 600 }), express.json(), expressMiddleware(apollo));
+// Each GraphQL request nudges the catalog: refresh in the background if stale (or inline if the cache is off).
+const touchCatalog = async (_req, _res, next) => {
+  try { await catalog.touch(); } catch { /* touch() already logs; never fail a request over it */ }
+  next();
+};
+
+app.use('/graphql', cors({ origin: CORS_ORIGINS, methods: ['GET', 'POST'], maxAge: 600 }), touchCatalog, express.json(), expressMiddleware(apollo));
 app.use(express.static(new URL('../public', import.meta.url).pathname));
 
 await new Promise((resolve) => httpServer.listen({ port: PORT }, resolve));
-log({ msg: 'started', port: PORT, videoBaseUrl: VIDEO_BASE_URL, version: APP_VERSION, corsOrigins: CORS_ORIGINS });
+log({ msg: 'started', port: PORT, videoBaseUrl: VIDEO_BASE_URL, version: APP_VERSION, corsOrigins: CORS_ORIGINS, database: Boolean(pool), catalogCache: CATALOG_CACHE_OFF ? 'off' : 'on' });
