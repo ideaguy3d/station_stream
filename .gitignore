@@ -19,3 +19,6 @@ tfplan
 gcp/hosting-dist/
 .firebase/
 firebase-debug.log
+
+# Personal interview prep (kept locally, not published)
+Local_Public-Systems_Reliability_Engineer.md
