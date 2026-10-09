@@ -148,7 +148,15 @@
       showUnmute(autoplay && start);
       $('nowPlaying').textContent = label;
       $('status').textContent = `Loading from ${new URL(url).host}…`;
-      const tryPlay = () => { if (start) video.play().catch(() => showUnmute(false)); };
+      const tryPlay = () => {
+        if (!start) return;
+        video.play().catch((err) => {
+          console.info(`play() refused: ${err.name}: ${err.message} (page ${document.visibilityState})`);
+          // Browsers won't start media in a background tab: try again when the viewer switches to it.
+          if (document.hidden) document.addEventListener('visibilitychange', tryPlay, { once: true });
+          else showUnmute(false); // blocked for real: the native play button still works
+        });
+      };
       if (window.Hls && Hls.isSupported()) {
         hls = new Hls();
         hls.on(Hls.Events.MANIFEST_PARSED, () => { renderQualityButtons(); tryPlay(); });
