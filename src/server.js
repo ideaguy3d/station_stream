@@ -28,6 +28,11 @@ catalog.refresh(); // boot on the bundled JSON, then switch to Aurora as soon as
 
 const app = express();
 const httpServer = http.createServer(app);
+// The ALB keeps idle connections to us open for 60 s. Node's default keep-alive is 5 s, so under
+// load the ALB sometimes reuses a connection Node is closing and returns a 502 (seen in L2 run 3).
+// Outlast the load balancer so it always closes first. headersTimeout must exceed keepAliveTimeout.
+httpServer.keepAliveTimeout = 65_000;
+httpServer.headersTimeout = 66_000;
 
 // One JSON line per request, so CloudWatch Logs can filter on fields later.
 app.use((req, res, next) => {

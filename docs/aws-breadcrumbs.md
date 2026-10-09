@@ -1234,6 +1234,90 @@ aws cloudwatch get-metric-statistics --namespace AWS/RDS --metric-name Serverles
 
 ---
 
+## Phase L2 🔜: Traffic spike, autoscaling, capacity planning (app 2)
+
+> Plan: [PLAN-L1-L2.md](PLAN-L1-L2.md) (runs 1–3; optional run 4 skipped for time). Load script: [loadtest/spike.js](../loadtest/spike.js) (k6). Metrics helper: [loadtest/metrics.sh](../loadtest/metrics.sh). Raw outputs: `loadtest/results/`. Only our own endpoint is ever hit: `https://d1436kyrcdypmk.cloudfront.net` → app 2.
+
+### L2.0 ✅ The tool
+
+**What & why:** **k6** (Grafana's load-testing tool) runs JavaScript "virtual users" (VUs). Each VU here does what a viewer's page does: the same GraphQL `Home` query as `public/index.html` for a random station, ~10% of the time `/health`, then sleeps 1 s. Thresholds make a run pass or fail: `http_req_failed < 1%` and Home `p(95) < 800 ms`. Run from Docker (no install), pinned to `grafana/k6:2.3.0`.
+```bash
+docker run --rm -i -e PROFILE=baseline -v "$PWD/loadtest:/scripts" grafana/k6:2.3.0 run --quiet /scripts/spike.js
+loadtest/metrics.sh <start-UTC> <end-UTC>    # per-minute CloudWatch table: CPU, healthy targets, requests, latency, 5xx, Aurora ACU
+```
+Columns in the tables below: `cpuavg/cpumax` = ECS service CPU % (average and busiest task), `healthy` = healthy targets behind the ALB, `reqs` = ALB requests/min, `reqpt` = requests per target per minute, `rt` = average target response time (ms, measured at the ALB, so no internet latency), `t5xx` = 5xx from our app, `e5xx` = 5xx from the load balancer itself, `acu` = Aurora capacity.
+
+### L2.1 ✅ Run 1: baseline (10 VUs × 5 min, 1 task, today's config)
+
+**k6:** 2,984 requests, **0.00% failed**, ~9.9 req/s. Home: median 92 ms, **p95 117 ms**, p99 155 ms, max 269 ms (that includes the internet round trip from the laptop to CloudFront). Both thresholds ✓.
+```
+time(UTC)  cpuavg  cpumax healthy    reqs   reqpt      rt    t5xx    e5xx     acu
+06:14         5.2     9.1     1.0   440.0   440.0       3       -       -     2.0
+06:15         5.4     5.7     1.0   607.0   607.0       2       -       -     4.0
+06:16         5.1     6.0     1.0   600.0   600.0       2       -       -     3.5
+06:17         5.1     5.5     1.0   602.0   602.0       2       -       -     3.0
+06:18         4.7     5.3     1.0   313.0   313.0       2       -       -     3.0
+```
+**Reading it:** one 0.25 vCPU task at ~600 req/min (10 req/s) sits at **~5% CPU** and answers in **~2 ms** at the ALB: the in-memory catalog means a request never waits on the database. Linear extrapolation says ~150–200 req/s per task at 100% CPU (optimistic: Node is single-threaded and latency climbs well before 100%). Run 2 measures the real ceiling.
+
+**Side observation, Aurora:** ACU went **0 → 4 → 3** during the baseline although the API sends only a few tiny queries a minute (one refresh per minute). After creation it also sat at 4 ACU and decayed slowly. Serverless v2 appears to resume high and scale down gradually; that is minutes at up to $0.48/h. A lower `max_capacity` would cap it.
+
+### L2.2 ✅ Run 2: spike on today's config (CPU 60%, max 2, 300 s cooldowns)
+
+**Profile:** 10 VUs for 2 min → 300 VUs in 30 s → hold 5 min → 10 VUs for 10 min (`PROFILE=spike`). Started 06:19:50Z.
+
+**Hypothesis (stated before the run):** autoscaling needs ~3 one-minute datapoints plus ~1 min to start a task, and 2 tasks can't carry ~300 req/s, so expect latency and errors.
+
+**k6:** 105,296 requests, **0.00% failed**, Home p95 **124 ms** (baseline 117), p99 179 ms, max 707 ms. Both thresholds ✓. **Hypothesis half wrong.**
+```
+time(UTC)  cpuavg  cpumax healthy    reqs   reqpt      rt    t5xx    e5xx     acu
+06:19         1.7     4.2     1.0   262.0   262.0       2       -       -     3.0
+06:20         4.3     4.6     1.0   606.0   606.0       2       -       -     3.0
+06:21         4.6     5.0     1.0   981.0   981.0       2       -       -     0.5
+06:22        64.3    77.5     1.0 15641.0 15641.0       5       -       -     0.5
+06:23        65.6    67.1     1.0 17739.0 17739.0       3       -       -     0.5
+06:24        66.1    68.5     1.0 17713.0 17713.0       5       -       -     0.5
+06:25        62.2    65.6     1.0 17809.0 17809.0       2       -       -     0.5
+06:26        65.2    68.2     1.0 17791.0 17791.0       4       -       -     0.5
+06:27        22.7    63.7     2.0 11070.0 10858.0       2       -       -     0.5
+06:28         4.9    16.9     2.0   602.0   301.0       2       -       -     0.5
+06:29         3.5     4.6     2.0   595.0   297.5       2       -       -     0.5
+06:30         2.8     3.4     2.0   601.0   300.5       2       -       -     0.5
+06:31         3.4     4.9     2.0   606.0   303.0       2       -       -     0.5
+06:32         2.7     2.9     2.0   602.0   301.0       2       -       -     0.5
+06:33         2.6     2.8     2.0   604.0   302.0       2       -       -     0.5
+06:34         2.9     3.8     2.0   606.0   303.0       2       -       -     0.5
+06:35         2.5     2.9     2.0   599.0   299.5       2       -       -     0.5
+06:36         2.5     2.8     2.0   607.0   303.5       1       -       -     0.5
+```
+**Task-count timeline** (`aws ecs describe-services` every 30 s) **and the scaling decision:**
+```
+06:20:23 desired=1 running=1
+06:27:38 desired=2 running=1 pending=1
+06:28:09 desired=2 running=2            ... still 2 at 06:38 (slow scale-in, on purpose)
+aws application-autoscaling describe-scaling-activities --service-namespace ecs --resource-id service/station-stream-tf/api
+# 06:27:18Z Successful "Setting desired count to 2."  Cause: monitor alarm TargetTracking-...-AlarmHigh-... in state ALARM triggered policy cpu60
+```
+**What it means:**
+1. **The lag was real**: CPU was over target from 06:22; the alarm fired at 06:27:18 and the second task was serving at 06:28, **after the spike ended (06:27:50)**. Reactive scaling contributed nothing to this spike.
+2. **Viewers never noticed** because one task had headroom: **~17,800 req/min (~297 req/s) on one 0.25 vCPU task at ~65% CPU**, ALB response time 2–5 ms. The L1 cache made each request ~0.5 ms of CPU. Caching is the cheapest capacity.
+3. **Capacity number:** one task ≈ 300 req/s at 65% CPU (≈450 req/s at 100%, but latency climbs before that). Plan with **~250 req/s per task at ~55% CPU**.
+4. Aurora stayed at 0.5 ACU through the spike: database load is independent of viewer count, by design.
+
+### L2.3 ✅ Tuning applied (Terraform, [monitoring.tf](../terraform/monitoring.tf))
+
+**What & why:**
+- **Max tasks 2 → 6** (`var.api_max_tasks`): room to grow, and a cost cap (~$0.06/h at 6 tasks).
+- **New target-tracking policy `requests-per-task` on `ALBRequestCountPerTarget` = 15,000/min** (`var.api_requests_per_task_target`, from run 2: 250 req/s ≈ 55% CPU). It tracks traffic itself, not its side effect: requests rise the instant viewers arrive, while a saturated task's CPU stops at 100% and can't tell you *how far* over you are. `resource_label` = `<alb arn suffix>/<target group arn suffix>`.
+- **Scale-out cooldown 300 s → 60 s** on both policies; **scale-in stays 300 s** so it doesn't flap. With two policies AWS scales **out if either** asks and **in only if both** agree.
+```bash
+terraform plan -out=tfplan && terraform apply tfplan   # 1 to add, 2 to change, 0 to destroy
+```
+**Console:** ECS → Clusters → station-stream-tf → api → Service auto scaling → Min 1 / Max 6, Policies (2): `requests-per-task: Tracking ALBRequestCountPerTarget at 15000`, `cpu60`.
+**Check:** `aws application-autoscaling describe-scaling-policies --service-namespace ecs --query 'ScalingPolicies[].[PolicyName,TargetTrackingScalingPolicyConfiguration.TargetValue,TargetTrackingScalingPolicyConfiguration.ScaleOutCooldown]'`
+
+---
+
 ## Teardown (reverse order of creation)
 
 Dependencies must go first: the service before the cluster, the load balancer before its security group, the task security group before the ALB group it references.

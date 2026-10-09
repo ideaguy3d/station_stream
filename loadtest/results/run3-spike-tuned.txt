@@ -1,0 +1,42 @@
+
+
+  █ THRESHOLDS 
+
+    http_req_duration{name:Home}
+    ✓ 'p(95)<800' p(95)=135.59ms
+
+    http_req_failed
+    ✓ 'rate<0.01' rate=0.00%
+
+
+  █ TOTAL RESULTS 
+
+    checks_total.......: 200556 185.532505/s
+    checks_succeeded...: 99.99% 200550 out of 200556
+    checks_failed......: 0.00%  6 out of 200556
+
+    ✗ Home 200
+      ↳  99% — ✓ 95521 / ✗ 3
+    ✗ Home has data
+      ↳  99% — ✓ 95521 / ✗ 3
+    ✓ health 200
+
+    HTTP
+    http_req_duration..............: avg=104.51ms med=99.6ms  p(90)=120.12ms p(95)=135.38ms p(99)=187.16ms max=613.55ms
+      { expected_response:true }...: avg=104.51ms med=99.6ms  p(90)=120.12ms p(95)=135.38ms p(99)=187.16ms max=613.55ms
+      { name:Home }................: avg=104.5ms  med=99.63ms p(90)=119.58ms p(95)=135.59ms p(99)=186.83ms max=613.55ms
+    http_req_failed................: 0.00%  3 out of 105032
+    http_reqs......................: 105032 97.164134/s
+
+    EXECUTION
+    iteration_duration.............: avg=1.11s    med=1.1s    p(90)=1.18s    p(95)=1.2s     p(99)=1.24s    max=1.75s   
+    iterations.....................: 95524  88.368371/s
+    vus............................: 1      min=1           max=300
+    vus_max........................: 300    min=300         max=300
+
+    NETWORK
+    data_received..................: 321 MB 297 kB/s
+    data_sent......................: 44 MB  41 kB/s
+
+
+
